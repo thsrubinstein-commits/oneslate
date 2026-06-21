@@ -22,12 +22,11 @@ def authenticate():
     if token_b64:
         try:
             garth.client.loads(base64.b64decode(token_b64).decode("utf-8"))
-            garth.client.username  # validates session
+            garth.client.username
             log("authenticated via saved token")
             return
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log("saved token failed, falling back to email/password:", e)
-
     email = os.environ.get("GARMIN_EMAIL")
     password = os.environ.get("GARMIN_PASSWORD")
     if not (email and password):
@@ -51,7 +50,6 @@ def secs_to_min(v):
 
 
 def display_name() -> str:
-    """Garmin wellness endpoints key on the profile displayName (a GUID), not the email."""
     global _DISPLAY_NAME
     if _DISPLAY_NAME:
         return _DISPLAY_NAME
@@ -59,13 +57,13 @@ def display_name() -> str:
         prof = garth.client.profile
         if isinstance(prof, dict):
             _DISPLAY_NAME = prof.get("displayName") or prof.get("profileId")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         log("profile property failed:", e)
     if not _DISPLAY_NAME:
         try:
             prof = garth.connectapi("/userprofile-service/socialProfile") or {}
             _DISPLAY_NAME = prof.get("displayName") or str(prof.get("profileId") or "")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log("socialProfile lookup failed:", e)
     if not _DISPLAY_NAME:
         _DISPLAY_NAME = garth.client.username
@@ -73,19 +71,43 @@ def display_name() -> str:
     return _DISPLAY_NAME
 
 
+def deep_find(obj, keys):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in keys and isinstance(v, (int, float)) and not isinstance(v, bool):
+                return v
+        for v in obj.values():
+            r = deep_find(v, keys)
+            if r is not None:
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = deep_find(v, keys)
+            if r is not None:
+                return r
+    return None
+
+
 def fetch_sleep(target_date: dt.date) -> dict:
     username = display_name()
     ds = target_date.isoformat()
-
     sleep = garth.connectapi(
         f"/wellness-service/wellness/dailySleepData/{username}",
         params={"date": ds, "nonSleepBufferMinutes": 60},
     ) or {}
-    if not (sleep.get("dailySleepDTO") or {}).get("sleepScores"):
-        log(f"raw sleep keys for {ds}:", list(sleep.keys()) if isinstance(sleep, dict) else type(sleep))
     dto = sleep.get("dailySleepDTO") or {}
 
-    score = first(dto, "sleepScores", "overall", "value")
+    score = first(dto, "sleepScores", "overall", "value") or first(sleep, "sleepScores", "overall", "value")
+    if score is None:
+        ss = dto.get("sleepScores") or sleep.get("sleepScores") or {}
+        if isinstance(ss, dict):
+            score = first(ss, "overall", "value") or ss.get("overallScore") or ss.get("value")
+    if score is None:
+        score = deep_find(dto.get("sleepScores") or sleep.get("sleepScores"), {"value", "overallScore"})
+    if score is None:
+        log(f"DTO dump {ds}:", json.dumps(dto)[:1500])
+        log(f"top-level keys {ds}:", list(sleep.keys()))
+
     deep = secs_to_min(dto.get("deepSleepSeconds"))
     rem = secs_to_min(dto.get("remSleepSeconds"))
     light = secs_to_min(dto.get("lightSleepSeconds"))
@@ -99,13 +121,12 @@ def fetch_sleep(target_date: dt.date) -> dict:
         ) or {}
         resting_hr = summary.get("restingHeartRate")
         body_battery = summary.get("bodyBatteryMostRecentValue") or summary.get("bodyBatteryHighestValue")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         log("resting HR / body battery unavailable:", e)
-
     try:
         hrv_data = garth.connectapi(f"/hrv-service/hrv/{ds}") or {}
         hrv = first(hrv_data, "hrvSummary", "lastNightAvg")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         log("HRV unavailable:", e)
 
     return {
