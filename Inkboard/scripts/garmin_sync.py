@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import os
 import sys
+import time
 
 import garth
 import requests
@@ -17,16 +18,29 @@ def log(*a):
     print("[garmin-sync]", *a, flush=True)
 
 
+def _is_429(e):
+    return "429" in str(e) or "Too Many Requests" in str(e)
+
+
 def authenticate():
     token_b64 = os.environ.get("GARMIN_TOKEN_BASE64", "").strip()
     if token_b64:
-        try:
-            garth.client.loads(base64.b64decode(token_b64).decode("utf-8"))
-            garth.client.username
-            log("authenticated via saved token")
-            return
-        except Exception as e:
-            log("saved token failed, falling back to email/password:", e)
+        last = None
+        for attempt in range(4):
+            try:
+                garth.client.loads(base64.b64decode(token_b64).decode("utf-8"))
+                garth.client.username
+                log("authenticated via saved token")
+                return
+            except Exception as e:
+                last = e
+                if _is_429(e) and attempt < 3:
+                    wait = 20 * (attempt + 1)
+                    log(f"Garmin rate-limited (429); retrying in {wait}s ({attempt + 1}/3)")
+                    time.sleep(wait)
+                    continue
+                break
+        log("saved token failed, falling back to email/password:", last)
     email = os.environ.get("GARMIN_EMAIL")
     password = os.environ.get("GARMIN_PASSWORD")
     if not (email and password):
@@ -49,7 +63,7 @@ def secs_to_min(v):
     return int(round(v / 60)) if isinstance(v, (int, float)) else None
 
 
-def display_name() -> str:
+def display_name():
     global _DISPLAY_NAME
     if _DISPLAY_NAME:
         return _DISPLAY_NAME
@@ -169,6 +183,9 @@ def upsert(row):
     url = os.environ["SUPABASE_URL"].rstrip("/")
     key = os.environ["SUPABASE_SERVICE_KEY"]
     user_id = os.environ["SUPABASE_USER_ID"]
+    for f in ("score", "duration_min", "deep_min", "rem_min", "light_min", "awake_min", "resting_hr", "hrv", "body_battery"):
+        v = row.get(f)
+        row[f] = int(round(v)) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
     row = {**row, "user_id": user_id, "updated_at": dt.datetime.utcnow().isoformat() + "Z"}
     resp = requests.post(
         f"{url}/rest/v1/sleep",
@@ -180,7 +197,10 @@ def upsert(row):
         },
         data=json.dumps(row), timeout=30,
     )
-    resp.raise_for_status()
+    if resp.status_code >= 300:
+        log(f"SUPABASE REJECTED ({resp.status_code}):", resp.text[:600])
+        log("row was:", json.dumps({k: v for k, v in row.items() if k != "raw"}))
+        resp.raise_for_status()
     log(f"upserted sleep for {row['date']}: score={row['score']} dur={row['duration_min']}min")
 
 
