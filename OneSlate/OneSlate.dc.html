@@ -55,7 +55,7 @@
           <div data-card-root="1" data-card-id="{{ c.id }}" style="position:absolute; left:0; top:0; width:560px; transform: {{ c.transform }}; background:var(--bg-1); border:1px solid var(--line); border-radius:8px; box-shadow:var(--elev-rail); padding:22px 24px; display:flex; flex-direction:column; gap:15px; cursor:grab;">
             <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px;">
               <div style="display:flex; flex-direction:column; gap:7px;">
-                <div style="font-size:11px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:var(--fg-3);">Inkboard · {{ locLabel }}</div>
+                <div style="font-size:11px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:var(--fg-3);">OneSlate · {{ locLabel }}</div>
                 <div style="height:9px; width:150px; background:repeating-linear-gradient(90deg, var(--fg-4) 0 1px, transparent 1px 16px); opacity:0.85;"></div>
               </div>
               <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px;">
@@ -256,7 +256,7 @@
 
   <div style="position:absolute; top:16px; left:16px; display:flex; align-items:center; gap:9px; padding:0 13px; height:34px; background:var(--bg-2); border:1px solid var(--line); border-radius:6px; box-shadow:var(--elev-rail); pointer-events:none;">
     <span style="color:var(--accent); font-size:13px; line-height:1;">◆</span>
-    <span style="font-size:11px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:var(--fg-2);">Inkboard</span>
+    <span style="font-size:11px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:var(--fg-2);">OneSlate</span>
   </div>
 
   <!-- account / sync chip -->
@@ -319,7 +319,7 @@
       <div style="width:380px; max-width:calc(100vw - 32px); background:var(--bg-1); border:1px solid var(--line); border-radius:8px; box-shadow:var(--elev-rail); padding:28px; display:flex; flex-direction:column; gap:16px;">
         <div style="display:flex; align-items:center; gap:9px;">
           <span style="color:var(--accent); font-size:14px;">◆</span>
-          <span style="font-size:11px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:var(--fg-2);">Inkboard</span>
+          <span style="font-size:11px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:var(--fg-2);">OneSlate</span>
         </div>
 
         <sc-if value="{{ loginSent }}" hint-placeholder-val="{{ false }}">
@@ -469,7 +469,7 @@ class Component extends DCLogic {
   loadWeather() {
     const loc = this.activeLoc();
     if (!loc) return;
-    const cacheKey = 'inkboard:wx:' + loc.id;
+    const cacheKey = 'oneslate:wx:' + loc.id;
     try {
       const cached = localStorage.getItem(cacheKey);
       if (cached) { const w = JSON.parse(cached); if (w && typeof w === 'object') this.setState({ weather: w }); }
@@ -514,7 +514,7 @@ class Component extends DCLogic {
         // ignore if the user switched locations mid-fetch
         if (this.activeLoc() && this.activeLoc().id !== cur_loc.id) return;
         this.setState({ weather });
-        try { localStorage.setItem('inkboard:wx:' + cur_loc.id, JSON.stringify(weather)); } catch (e) {}
+        try { localStorage.setItem('oneslate:wx:' + cur_loc.id, JSON.stringify(weather)); } catch (e) {}
       } catch (e) { /* offline — keep cached/seed values */ }
     };
     fetchNow();
@@ -598,7 +598,7 @@ class Component extends DCLogic {
   // Caches the last good value to localStorage so the card survives offline / sync gaps.
   async fetchSleep() {
     try {
-      const cached = localStorage.getItem('inkboard:sleep');
+      const cached = localStorage.getItem('oneslate:sleep');
       if (cached && !this.state.sleep) { const c = JSON.parse(cached); this.setState({ sleep: c.row, sleepSyncedAt: c.at }); }
     } catch (e) {}
     if (!this._sb || !this.state.user) return;
@@ -606,7 +606,7 @@ class Component extends DCLogic {
       const { data, error } = await this._sb.from('sleep').select('*').eq('user_id', this.state.user.id).order('date', { ascending: false }).limit(1).maybeSingle();
       if (!error && data) {
         this.setState({ sleep: data, sleepSyncedAt: Date.now() });
-        try { localStorage.setItem('inkboard:sleep', JSON.stringify({ row: data, at: Date.now() })); } catch (e) {}
+        try { localStorage.setItem('oneslate:sleep', JSON.stringify({ row: data, at: Date.now() })); } catch (e) {}
       }
     } catch (e) { /* keep cached value */ }
   }
@@ -619,7 +619,7 @@ class Component extends DCLogic {
       locations: (Array.isArray(d.locations) && d.locations.length) ? d.locations : prev.locations,
       locId: d.locId || prev.locId,
       firstDay: d.firstDay || prev.firstDay,
-    }), () => { this.purgeDemo(); try { localStorage.setItem('inkboard:v2', JSON.stringify(this.boardData())); } catch (e) {} });
+    }), () => { this.purgeDemo(); try { localStorage.setItem('oneslate:v2', JSON.stringify(this.boardData())); } catch (e) {} });
   }
 
   boardData() {
@@ -669,7 +669,7 @@ class Component extends DCLogic {
 
   componentDidMount() {
     try {
-      const raw = localStorage.getItem('inkboard:v2');
+      const raw = localStorage.getItem('oneslate:v2');
       if (raw) {
         const s = JSON.parse(raw);
         this.setState(prev => ({
@@ -772,7 +772,7 @@ class Component extends DCLogic {
   persist() {
     try {
       const { cards, dayLogs, completed, panX, panY, zoom, locations, locId, firstDay } = this.state;
-      localStorage.setItem('inkboard:v2', JSON.stringify({ cards, dayLogs, completed, panX, panY, zoom, locations, locId, firstDay }));
+      localStorage.setItem('oneslate:v2', JSON.stringify({ cards, dayLogs, completed, panX, panY, zoom, locations, locId, firstDay }));
     } catch (e) {}
     this.saveCloud();
   }
@@ -847,9 +847,9 @@ class Component extends DCLogic {
       body = `DTSTART;VALUE=DATE:${dk}\r\nDTEND;VALUE=DATE:${next}`;
     }
     const ics = [
-      'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Inkboard//EN', 'CALSCALE:GREGORIAN',
+      'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//OneSlate//EN', 'CALSCALE:GREGORIAN',
       'BEGIN:VEVENT',
-      `UID:${item.id || this.uid()}-${dk}@inkboard`,
+      `UID:${item.id || this.uid()}-${dk}@oneslate`,
       `DTSTAMP:${dtstamp}`,
       body,
       `SUMMARY:${summary}`,

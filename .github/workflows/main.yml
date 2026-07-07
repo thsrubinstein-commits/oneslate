@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install deps
-        run: pip install -r Inkboard/scripts/requirements.txt
+        run: pip install -r OneSlate/scripts/requirements.txt
       - name: Sync last night's sleep
         env:
           GARMIN_TOKEN_BASE64: ${{ secrets.GARMIN_TOKEN_BASE64 }}
@@ -27,4 +27,4 @@ jobs:
           SUPABASE_URL:        ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           SUPABASE_USER_ID:    ${{ secrets.SUPABASE_USER_ID }}
-        run: python Inkboard/scripts/garmin_sync.py
+        run: python OneSlate/scripts/garmin_sync.py

@@ -1,4 +1,4 @@
-# Inkboard — setup
+# OneSlate — setup
 
 Your personal cross-device dashboard. The frontend (`index.html`) is already built,
 deployed to GitHub Pages, and syncing via Supabase. This file covers the **Garmin sleep
@@ -54,7 +54,7 @@ dashboard — your score appears on the Recovery card. After that it runs automa
 morning (`cron: "10 11 * * *"`, ~7:10am ET — edit the time in the workflow if you like).
 
 ## Files
-- `index.html` — the dashboard (compiled; edit `Inkboard.dc.html` and re-bundle to change).
+- `index.html` — the dashboard (compiled; edit `OneSlate.dc.html` and re-bundle to change).
 - `supabase/migrations/0001_sleep.sql` — sleep table + security.
 - `.github/workflows/garmin-sync.yml` — the daily job.
 - `scripts/garmin_sync.py` — Garmin → Supabase sync.

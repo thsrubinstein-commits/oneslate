@@ -1,4 +1,4 @@
--- Inkboard — Garmin sleep / recovery storage
+-- OneSlate — Garmin sleep / recovery storage
 -- Run this in Supabase → SQL Editor → New query → Run.
 -- (The `boards` table from the sync setup should already exist; this adds `sleep`.)
 
