@@ -1,6 +1,6 @@
 // OneSlate service worker — offline shell, but always prefers fresh content so new
 // deploys show up immediately. Same-origin GETs only; never touches API calls.
-const CACHE = 'oneslate-v3';
+const CACHE = 'oneslate-v4';
 
 self.addEventListener('install', () => self.skipWaiting());
 
