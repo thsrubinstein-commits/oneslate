@@ -1,6 +1,12 @@
 // OneSlate service worker — offline shell, but always prefers fresh content so new
 // deploys show up immediately. Same-origin GETs only; never touches API calls.
-const CACHE = 'oneslate-v9';
+const CACHE = 'oneslate-v10';
+
+// Cross-origin hosts we're allowed to cache: the MediaPipe eye-control runtime
+// (WASM + model), lazy-loaded from a CDN only when the user enables eye control.
+// These are versioned/immutable URLs, so cache-first is safe and gives the
+// feature offline reuse after the first load.
+const GAZE_HOSTS = ['cdn.jsdelivr.net', 'storage.googleapis.com'];
 
 self.addEventListener('install', () => self.skipWaiting());
 
@@ -14,7 +20,22 @@ self.addEventListener('activate', (e) => e.waitUntil((async () => {
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   const u = new URL(req.url);
-  if (req.method !== 'GET' || u.origin !== location.origin) return;
+  if (req.method !== 'GET') return;
+
+  // MediaPipe assets (cross-origin): cache-first for offline eye control.
+  if (u.origin !== location.origin) {
+    if (GAZE_HOSTS.includes(u.hostname)) {
+      e.respondWith((async () => {
+        const cache = await caches.open(CACHE);
+        const cached = await cache.match(req);
+        if (cached) return cached;
+        const net = await fetch(req);
+        if (net && (net.ok || net.type === 'opaque')) cache.put(req, net.clone());
+        return net;
+      })());
+    }
+    return;
+  }
 
   const isDoc = req.mode === 'navigate' || u.pathname.endsWith('/') || u.pathname.endsWith('.html');
 
