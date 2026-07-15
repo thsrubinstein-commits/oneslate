@@ -1,0 +1,45 @@
+name: Deploy Strava edge functions
+
+# Deploys the Strava edge functions to Supabase from CI, so you never need the
+# `supabase` CLI locally. It deploys ONLY the strava-* functions (never health-chat,
+# so your tuned coach prompt is left untouched) and forces JWT verification OFF on the
+# OAuth callback (Strava's redirect carries no user token).
+#
+# One-time setup:
+#   1. Create a Supabase access token: https://supabase.com/dashboard/account/tokens
+#   2. Repo → Settings → Secrets and variables → Actions → New repository secret:
+#        name  = SUPABASE_ACCESS_TOKEN
+#        value = the token from step 1
+#   3. Actions tab → "Deploy Strava edge functions" → Run workflow.
+# After that it also re-deploys automatically whenever you change a strava function.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "OneSlate/supabase/functions/strava-**"
+      - "OneSlate/supabase/functions/_shared/**"
+      - "OneSlate/supabase/config.toml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      PROJECT_REF: xspojczmywydubmttued
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Deploy strava functions
+        working-directory: OneSlate            # so the CLI finds supabase/ + config.toml
+        run: |
+          set -e
+          supabase functions deploy strava-auth-url       --project-ref "$PROJECT_REF"
+          supabase functions deploy strava-sync           --project-ref "$PROJECT_REF"
+          # callback is hit directly by Strava (no JWT) — force verification off
+          supabase functions deploy strava-oauth-callback --project-ref "$PROJECT_REF" --no-verify-jwt
