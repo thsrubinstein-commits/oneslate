@@ -1,0 +1,13 @@
+# Supabase local/dev config. The Strava OAuth callback is hit directly by Strava
+# (a redirect, no user JWT), so it must skip JWT verification. The other two
+# functions are called from the browser with the user's JWT and keep verification on.
+project_id = "oneslate"
+
+[functions.strava-auth-url]
+verify_jwt = true
+
+[functions.strava-sync]
+verify_jwt = true
+
+[functions.strava-oauth-callback]
+verify_jwt = false
