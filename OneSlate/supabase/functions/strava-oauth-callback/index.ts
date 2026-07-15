@@ -7,17 +7,14 @@ import {
 } from "../_shared/strava.ts";
 
 function closePage(message: string, ok: boolean) {
-  return new Response(
-    `<!doctype html><meta charset="utf-8"><title>Strava</title>
-<body style="font-family:system-ui;background:#111;color:#eee;display:grid;place-items:center;height:100vh;margin:0">
-<div style="text-align:center">
-  <div style="font-size:15px">${message}</div>
-  <div style="font-size:12px;color:#888;margin-top:8px">You can close this window.</div>
-</div>
-<script>try{window.opener&&window.opener.postMessage({source:'strava',ok:${ok}},'*')}catch(e){}
-setTimeout(function(){window.close()},${ok ? 800 : 2500})</script>`,
-    { status: ok ? 200 : 400, headers: { "Content-Type": "text/html; charset=utf-8" } },
-  );
+  // Supabase serves function responses as text/plain with nosniff, so HTML/JS
+  // won't render or run here — return clean ASCII plain text. OneSlate's connect
+  // flow detects the popup closing and then runs the sync, so no script is needed.
+  const body = `${message}\n\nYou can close this window and return to OneSlate.`;
+  return new Response(body, {
+    status: ok ? 200 : 400,
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
 }
 
 Deno.serve(async (req) => {
@@ -61,7 +58,7 @@ Deno.serve(async (req) => {
       scope: url.searchParams.get("scope"),
       updated_at: now,
     });
-    return closePage("Strava connected ✓", true);
+    return closePage("Strava connected.", true);
   } catch (e) {
     return closePage(`Could not connect Strava: ${(e as Error).message}`, false);
   }
