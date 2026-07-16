@@ -130,6 +130,39 @@ Deno.serve(async (req) => {
     else lastError = (e as Error).message;
   }
 
+  // 2b) Self-heal: collapse any duplicate rows for the same activity. Rows can
+  // predate the unique(user_id,strava_id) constraint — e.g. a strava_id-null twin
+  // from an older import sits beside the synced row, and NULLs are distinct so both
+  // survive. We group Strava rows by start instant (an activity can't start twice)
+  // and keep the most complete one (has strava_id, then newest sync). Manual runs
+  // (provider 'manual', strava_id null) are left untouched. Best-effort: never fails
+  // the sync.
+  try {
+    const { data: existing } = await svc.from("runs")
+      .select("id, provider, strava_id, started_at, synced_at")
+      .eq("user_id", userId);
+    if (existing && existing.length) {
+      const groups = new Map<string, any[]>();
+      for (const r of existing) {
+        if (r.strava_id == null && r.provider !== "strava") continue; // leave manual runs alone
+        const key = String(Math.floor(new Date(r.started_at).getTime() / 1000));
+        let arr = groups.get(key);
+        if (!arr) { arr = []; groups.set(key, arr); }
+        arr.push(r);
+      }
+      const toDelete: any[] = [];
+      for (const rows of groups.values()) {
+        if (rows.length < 2) continue;
+        rows.sort((a, b) =>
+          (Number(b.strava_id != null) - Number(a.strava_id != null)) ||
+          (new Date(b.synced_at || 0).getTime() - new Date(a.synced_at || 0).getTime())
+        );
+        for (let i = 1; i < rows.length; i++) toDelete.push(rows[i].id);
+      }
+      if (toDelete.length) await svc.from("runs").delete().in("id", toDelete);
+    }
+  } catch (_) { /* dedupe is best-effort; never fail the sync over it */ }
+
   // 3) Persist watermark + budget + status.
   await svc.from("strava_sync_state").upsert({
     user_id: userId,
