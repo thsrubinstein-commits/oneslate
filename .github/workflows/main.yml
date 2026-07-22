@@ -8,11 +8,21 @@ name: Garmin sleep sync
 
 on:
   schedule:
-    # cron is UTC. ~7am US-Eastern (EDT = UTC-4): 11:05, plus two follow-ups in case the
-    # score posts a little later. Once captured, the follow-ups skip via cooldown.
+    # cron is UTC. We keep re-trying through the day so that whenever your watch/phone
+    # actually uploads last night's sleep to Garmin's cloud, the NEXT run picks it up —
+    # no need to open Garmin Connect or trigger anything by hand. The script is
+    # cache-first + cooldown-aware, so once the night is captured every later run is a
+    # cheap no-op (18h success cooldown), and while data is missing it rechecks ~hourly.
+    # ~7am US-Eastern (EDT = UTC-4) is the first attempt; then every ~2h until ~9pm ET.
     - cron: "5 11 * * *"     # ~7:05am ET
-    - cron: "5 12 * * *"     # ~8:05am ET (catch a late post)
-    - cron: "30 13 * * *"    # ~9:30am ET (final safety net)
+    - cron: "5 12 * * *"     # ~8:05am ET
+    - cron: "30 13 * * *"    # ~9:30am ET
+    - cron: "0 15 * * *"     # ~11:00am ET
+    - cron: "0 17 * * *"     # ~1:00pm ET
+    - cron: "0 19 * * *"     # ~3:00pm ET
+    - cron: "0 21 * * *"     # ~5:00pm ET
+    - cron: "0 23 * * *"     # ~7:00pm ET
+    - cron: "0 1 * * *"      # ~9:00pm ET (final safety net)
   workflow_dispatch:
     inputs:
       force:

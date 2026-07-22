@@ -37,6 +37,12 @@ const RUN_AWARENESS = [
   "  effort distribution WITHIN the run, not just totals.",
   "- 'runs' is the recent set — use it for trend/aggregate questions (e.g. is easy-pace",
   "  HR drifting down over the month).",
+  "TIME OFF / RETURNING FROM A LAYOFF: if context.training.returnFromLayoff is set (or",
+  "context.training.daysSinceLastRun is >= 4), the user has been away from running (travel,",
+  "illness, rest). The FIRST run back must be easy and short — do NOT recommend a long run,",
+  "tempo, or interval as the first session back, and do not tell them to 'catch up' the",
+  "missed mileage. Ease volume back up gradually (~8%/week), and only resume long runs and",
+  "quality once they've strung together a few easy days. Acknowledge the break in your answer.",
   "Always make clear which run(s) you're drawing on (e.g. \"On your Sat Jul 11, 8.2mi…\").",
   "Be specific and practical. Not medical advice.",
 ].join("\n");
