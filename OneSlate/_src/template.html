@@ -4392,11 +4392,11 @@ class Component extends DCLogic {
   deriveHealth() {
     const hist = (this.state.sleepHistory || []).filter(Boolean);
     const sleep = this.state.sleep || hist[hist.length - 1] || null;
-    // A night's sleep should have synced by mid-morning. Once we're past that window, a row
-    // still dated before today is stale — not "last night" — so the score/duration shouldn't
-    // keep displaying an old night as if it were current.
+    // The sync writes the row dated to the morning the sleep session ended, so once the
+    // calendar date has moved on, a row still dated before today is stale — not "last
+    // night" — and the score/duration shouldn't keep displaying an old night as current.
     const todayKey = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })();
-    const sleepStale = !!(sleep && sleep.date && sleep.date !== todayKey && new Date().getHours() >= 10);
+    const sleepStale = !!(sleep && sleep.date && sleep.date !== todayKey);
     const avg = (arr, key) => { const v = arr.map(x => x && x[key]).filter(n => typeof n === 'number'); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
     const baseHrv = avg(hist, 'hrv'), baseRhr = avg(hist, 'resting_hr'), baseScore = avg(hist, 'score'), baseDur = avg(hist, 'duration_min');
 
