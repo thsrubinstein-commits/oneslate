@@ -1614,7 +1614,7 @@ button, input, textarea, select, [role="button"] {
         <div style="display:flex; align-items:center; gap:11px;">
           <span style="color:var(--accent); font-size:14px;">♡</span>
           <span style="font-size:12px; font-weight:600; letter-spacing:0.16em; text-transform:uppercase; color:var(--fg-1);">Health</span>
-          <span style="font-size:11px; color:var(--fg-3); letter-spacing:0.04em;">{{ hAge }}</span>
+          <span style="font-size:11px; color:{{ hAgeColor }}; letter-spacing:0.04em;">{{ hAge }}</span>
         </div>
         <button data-nodrag="1" onclick="{{ onCloseOverlay }}" style="height:30px; padding:0 12px; background:transparent; border:1px solid var(--line); border-radius:4px; color:var(--fg-1); font-size:11px; font-weight:600; letter-spacing:0.1em; text-transform:uppercase; cursor:pointer;" style-hover="background:var(--well);">Done</button>
       </div>
@@ -4392,6 +4392,11 @@ class Component extends DCLogic {
   deriveHealth() {
     const hist = (this.state.sleepHistory || []).filter(Boolean);
     const sleep = this.state.sleep || hist[hist.length - 1] || null;
+    // A night's sleep should have synced by mid-morning. Once we're past that window, a row
+    // still dated before today is stale — not "last night" — so the score/duration shouldn't
+    // keep displaying an old night as if it were current.
+    const todayKey = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })();
+    const sleepStale = !!(sleep && sleep.date && sleep.date !== todayKey && new Date().getHours() >= 10);
     const avg = (arr, key) => { const v = arr.map(x => x && x[key]).filter(n => typeof n === 'number'); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
     const baseHrv = avg(hist, 'hrv'), baseRhr = avg(hist, 'resting_hr'), baseScore = avg(hist, 'score'), baseDur = avg(hist, 'duration_min');
 
@@ -4431,7 +4436,7 @@ class Component extends DCLogic {
 
     return {
       sleep, hist, recovery, recoveryParts, strain, strainLabel, readiness, readyColor,
-      baseHrv, baseRhr, baseScore, baseDur,
+      baseHrv, baseRhr, baseScore, baseDur, sleepStale,
       belowBaseline: sleep && baseScore && sleep.score != null && sleep.score < baseScore - 5,
       trendScore: Math.round(trendScore),
     };
@@ -7929,8 +7934,8 @@ class Component extends DCLogic {
       pRecovery: hasHealth && h.recovery != null ? String(h.recovery) : '—',
       pReadiness: hasHealth ? (h.readiness || '') : 'no data',
       pReadyColor: hasHealth ? (h.readyColor || 'var(--fg-2)') : 'var(--fg-3)',
-      pSleepScore: hasHealth && h.sleep.score != null ? String(h.sleep.score) : '—',
-      pSleepDur: hasHealth ? dur(h.sleep.duration_min) : '—',
+      pSleepScore: hasHealth && !h.sleepStale && h.sleep.score != null ? String(h.sleep.score) : '—',
+      pSleepDur: hasHealth && !h.sleepStale ? dur(h.sleep.duration_min) : '—',
       pHrv: hasHealth && h.sleep.hrv != null ? h.sleep.hrv + ' ms' : '—',
       pRhr: hasHealth && h.sleep.resting_hr != null ? h.sleep.resting_hr + ' bpm' : '—',
       pStrain: hasHealth && h.strain != null ? String(h.strain) : '—',
@@ -8951,7 +8956,7 @@ class Component extends DCLogic {
     const hsleep = H.sleep || {};
     const recColor = H.recovery == null ? 'var(--fg-3)' : H.recovery >= 80 ? 'var(--accent)' : H.recovery >= 62 ? '#9cb3a0' : '#c9b87e';
     const sleepDurH = hsleep.duration_min ? `${Math.floor(hsleep.duration_min/60)}h ${pad(hsleep.duration_min%60)}m` : '—';
-    const fmtAge = (() => { if(!hsleep.date) return 'no data'; const d=this._relDays?this._relDays(hsleep.date):0; return d<=0?'today':d===1?'last night':`${d}d ago`; })();
+    const fmtAge = (() => { if(!hsleep.date) return 'no data'; if (H.sleepStale) return 'sync needed'; const d=this._relDays?this._relDays(hsleep.date):0; return d<=0?'today':d===1?'last night':`${d}d ago`; })();
     const healthTabs = [['today','Today'],['sleep','Sleep'],['recovery','Recovery'],['strain','Strain'],['nutrition','Nutrition'],['trends','Trends'],['coach','Coach']]
       .map(([k,label])=>({key:k,label,active:this.state.healthTab===k,...tabStyle(this.state.healthTab===k),onSelect:()=>this.setState({healthTab:k})}));
     // trend bars (last 14 sleep scores)
@@ -9249,9 +9254,10 @@ class Component extends DCLogic {
       hReadiness: hcoach.readiness,
       hReadyColor: hcoach.readyColor,
       hReadyLabel: hcoach.readiness === 'push' ? 'Ready to push' : hcoach.readiness === 'recover' ? 'Recover today' : 'Maintain',
-      hSleepScore: hsleep.score != null ? hsleep.score : '—',
-      hSleepSub: hsleep.score == null ? '—' : (hsleep.score_derived ? `est · ${sleepDurH}` : sleepDurH),
-      hSleepDur: sleepDurH,
+      hSleepScore: H.sleepStale ? '—' : (hsleep.score != null ? hsleep.score : '—'),
+      hSleepSub: H.sleepStale ? 'not synced yet' : (hsleep.score == null ? '—' : (hsleep.score_derived ? `est · ${sleepDurH}` : sleepDurH)),
+      hSleepDur: H.sleepStale ? '—' : sleepDurH,
+      hAgeColor: H.sleepStale ? 'var(--accent)' : 'var(--fg-3)',
       hRestHr: hsleep.resting_hr != null ? hsleep.resting_hr : '—',
       hHrv: hsleep.hrv != null ? hsleep.hrv : '—',
       hBattery: hsleep.body_battery != null ? hsleep.body_battery : '—',
