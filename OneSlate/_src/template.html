@@ -6414,9 +6414,17 @@ class Component extends DCLogic {
     const building3 = prev[0] > prev[1] * 1.02 && prev[1] > prev[2] * 1.02 && prev[2] > 0; // 3 straight builds → cut back
 
     // proactively due for a down week? true once ~3-4 weeks have climbed with no real cutback yet.
-    const isDownWeek = (cur, priorWk) => priorWk > 0 && cur <= priorWk * 0.82;
-    const hadDownRecently = isDownWeek(prev[0], prev[1]) || isDownWeek(prev[1], prev[2]) || isDownWeek(prev[2], wk4);
-    const climbedStreak = prev[0] > 0 && prev[1] > 0 && prev[2] > 0 && !hadDownRecently;
+    // Checked against the PEAK of the last 4 completed weeks (not just adjacent pairwise deltas) —
+    // chaining pairwise comparisons can miss a real cutback when a nearby week is itself irregular
+    // for an unrelated reason, which was letting a down week get scheduled again the very next week
+    // right after one had just happened. A wider net (15% off the peak, checked against every one of
+    // the last 4 weeks) plus requiring last week to have actually grown, not just been non-zero,
+    // closes that gap.
+    const priorFour = [prev[0], prev[1], prev[2], wk4];
+    const recentPeak = Math.max(...priorFour);
+    const hadDownRecently = recentPeak > 0 && priorFour.some(w => w > 0 && w <= recentPeak * 0.85);
+    const lastWeekGrew = prev[1] > 0 && prev[0] >= prev[1] * 0.97; // last week wasn't itself a pullback
+    const climbedStreak = prev[0] > 0 && prev[1] > 0 && prev[2] > 0 && !hadDownRecently && lastWeekGrew;
     const dueForDownWeek = climbedStreak && base > goalKm * 0.4;
 
     // HR-at-easy-pace trend gates progression regardless of what load/ACWR say.
@@ -6424,7 +6432,7 @@ class Component extends DCLogic {
     const hrOk = !hrTrend || hrTrend.flatOrImproving;
 
     let targetKm, weekPhase, weekPhaseColor;
-    if (dueForDownWeek || (building3 && base > goalKm * 0.5)) {
+    if (dueForDownWeek || (building3 && !hadDownRecently && base > goalKm * 0.5)) {
       targetKm = base * 0.75; weekPhase = 'deload week'; weekPhaseColor = '#c9b87e';
     } else if (!hrOk && base < goalKm * 0.98) {
       targetKm = Math.max(base, doneKm); weekPhase = 'holding — HR drifting, let it settle'; weekPhaseColor = '#c9b87e';
@@ -6453,19 +6461,26 @@ class Component extends DCLogic {
   // phase-appropriate target — replaces the old formula that pinned every long run to 12 km (7.5 mi).
   // Holds the long run flat once it's already a big share (>40%) of weekly volume — growth goes to
   // midweek runs instead, so the long run settles back toward ~1/3 of the week rather than creeping past it. ----
-  _longTargetKm(s, base, mplan) {
+  // `deload` scales the target down for a down week — applied HERE, once, so every caller
+  // (the day's suggestion, the weekly template, and the completion-detection threshold below)
+  // always agrees on the same number. Scaling it separately in each caller is how a deload-week
+  // long run can end up shorter than the threshold used to recognize it was ever done.
+  _longTargetKm(s, base, mplan, deload) {
     const longGoalKm = (mplan && mplan.longTargetMi) ? mplan.longTargetMi / 0.621371 : Math.max(12.9, base * 0.42);
     const recentLongKm = s.longestRecentKm || 0;
     const longShareHigh = base > 0 && recentLongKm > 0 && (recentLongKm / base) > 0.40;
     let longKm = recentLongKm
       ? (longShareHigh ? recentLongKm : Math.max(recentLongKm, Math.min(longGoalKm, recentLongKm + 1.6))) // hold flat if >40% of the week; else grow ~1 mi/wk
       : Math.min(longGoalKm, Math.max(11.3, base * 0.35));                 // no recent long → conservative start
-    return Math.min(longKm, 42);
+    longKm = Math.min(longKm, 42);
+    return deload ? longKm * 0.75 : longKm;
   }
   // A run counts as "the long run" for this athlete when it clears this bar — distance-based, so
-  // Strava runs stored as type 'easy' (it only tags 'long' at ≥16 km) are still recognised.
-  _longThreshKm(s, base, mplan) {
-    return Math.max(11.3, this._longTargetKm(s, base, mplan) * 0.8, base * 0.28);
+  // Strava runs stored as type 'easy' (it only tags 'long' at ≥16 km) are still recognised. Derived
+  // from the SAME (deload-aware) target as _longTargetKm, so a shortened down-week long run is
+  // never below the bar used to detect it was completed.
+  _longThreshKm(s, base, mplan, deload) {
+    return Math.max(this._longTargetKm(s, base, mplan, deload) * 0.8, base * 0.28 * (deload ? 0.75 : 1));
   }
 
   // ---- daily self-check-in (feel/soreness/illness) — the manual signal that drives
@@ -6571,7 +6586,7 @@ class Component extends DCLogic {
     // Long detection is distance-based (not just the stored type) so a 10–14 mi run that Strava
     // filed as 'easy' still registers — otherwise the coach loops forever on "no long run yet".
     const thisWk = s.runs.filter(r => r._d >= wkStart);
-    const longThreshKm = this._longThreshKm(s, base, mp);
+    const longThreshKm = this._longThreshKm(s, base, mp, deloadWeek);
     const hadLong = thisWk.some(r => r.type === 'long' || r.type === 'race' || (r.distance_km || 0) >= longThreshKm);
     // speed work is a regular part of the week now: target 2 quality sessions (tempo + speed) once
     // frequency/volume support it, gated on the same HR-efficiency trend as volume progression.
@@ -6639,7 +6654,7 @@ class Component extends DCLogic {
       push = ['recover', 'var(--fg-2)'];
     } else if (!hadLong && remainKm > base * 0.25 && (ready == null || ready >= 55)) {
       nextType = 'long';
-      nextKm = deloadWeek ? this._longTargetKm(s, base, mp) * 0.75 : this._longTargetKm(s, base, mp);
+      nextKm = this._longTargetKm(s, base, mp, deloadWeek);
       const stepFromLast = !deloadWeek && s.longestRecentKm && nextKm > s.longestRecentKm + 0.3;
       headline = deloadWeek ? 'Down week — easy long run' : 'Long run — build the engine';
       body = deloadWeek
@@ -6797,8 +6812,8 @@ class Component extends DCLogic {
     const layoff = days >= 4;
     let rpw = Math.round(s.runsPerWk || 4); rpw = Math.max(3, Math.min(6, rpw));
 
-    const longKm = this._longTargetKm(s, base, mp);
-    const longThreshKm = this._longThreshKm(s, base, mp);
+    const longKm = this._longTargetKm(s, base, mp, deload);
+    const longThreshKm = this._longThreshKm(s, base, mp, deload);
     const isLong = r => r.type === 'long' || r.type === 'race' || (r.distance_km || 0) >= longThreshKm;
     const isQual = r => r.type === 'workout' || r.type === 'race';
 
@@ -6811,11 +6826,11 @@ class Component extends DCLogic {
       for (let i = 0; i < n; i++) sess.push({ kind: 'easy', km: easyKm, note: easeNote, pace: zr('Easy') });
     } else {
       const phaseK = this._phaseKey(mp);
-      const longMiVal = mi(deload ? longKm * 0.75 : longKm);
+      const longMiVal = mi(longKm);
       let longNote = 'aerobic base · time on feet';
       // sharpening phase: the long run becomes marathon-pace work — the second quality stimulus.
       if (phaseK === 'sharpen' && !deload) { const F = this._mpFinish(longMiVal, tp); longNote = `easy, then close the last ${F.seg} mi @ marathon pace (${F.pace})`; }
-      sess.push({ kind: 'long', km: deload ? longKm * 0.75 : longKm, note: longNote, pace: zr('Long run') });
+      sess.push({ kind: 'long', km: longKm, note: longNote, pace: zr('Long run') });
       // dedicated quality day(s) once there's aerobic base + frequency to absorb them (the MP long
       // above is a third stimulus in the sharpening phase). Speed work is now a regular part of the
       // week, not an occasional extra: once frequency + volume support it, run TWO quality sessions
