@@ -4065,6 +4065,7 @@ class Component extends DCLogic {
     this.fetchRunning();
     this.fetchNutrition();
     this.subscribeNutrition();
+    this.subscribeSleep();
     try {
       if (!this._hasName() && localStorage.getItem('oneslate:name-asked') !== '1') {
         localStorage.setItem('oneslate:name-asked', '1');
@@ -4151,6 +4152,18 @@ class Component extends DCLogic {
     this.setState({ nutSyncing: true });
     try { await this.fetchNutrition(); } catch (e) {}
     setTimeout(() => this.setState({ nutSyncing: false }), 450);
+  }
+
+  // Live-update Health the moment the phone's sync writes a night. Inside the iOS app the
+  // OneSlate tab is a persistent WKWebView that a native sync never reloads or refocuses, so
+  // without this a successful sync still showed "sync needed" until the next 15-min poll.
+  subscribeSleep() {
+    if (!this._sb || !this.state.user || this._schan) return;
+    try {
+      this._schan = this._sb.channel('sleep-' + this.state.user.id)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'sleep', filter: 'user_id=eq.' + this.state.user.id }, () => this.fetchSleep())
+        .subscribe();
+    } catch (e) { /* realtime not available — focus/visibility/poll still refresh */ }
   }
 
   // Live-update the Nutrition view the moment a new day lands from the ingest function.
@@ -7519,6 +7532,10 @@ class Component extends DCLogic {
     this.initCloud();
     this._onFocus = () => { this.fetchSleep(); this.fetchNutrition(); };
     window.addEventListener('focus', this._onFocus);
+    // WKWebView doesn't fire window focus when you switch tabs in the native app; these do.
+    this._onVisible = () => { if (document.visibilityState === 'visible') this._onFocus(); };
+    document.addEventListener('visibilitychange', this._onVisible);
+    window.addEventListener('pageshow', this._onFocus);
     this._sleepPoll = setInterval(() => this.fetchSleep(), 15 * 60 * 1000);
 
     const stage = this.stageRef.current;
@@ -7628,8 +7645,10 @@ class Component extends DCLogic {
     clearInterval(this._clock);
     clearInterval(this._wxTimer);
     clearInterval(this._sleepPoll);
-    if (this._onFocus) window.removeEventListener('focus', this._onFocus);
+    if (this._onFocus) { window.removeEventListener('focus', this._onFocus); window.removeEventListener('pageshow', this._onFocus); }
+    if (this._onVisible) document.removeEventListener('visibilitychange', this._onVisible);
     if (this._sb && this._nchan) { try { this._sb.removeChannel(this._nchan); } catch (e) {} this._nchan = null; }
+    if (this._sb && this._schan) { try { this._sb.removeChannel(this._schan); } catch (e) {} this._schan = null; }
     clearTimeout(this._reviewFlashT);
     if (this._onKey) window.removeEventListener('keydown', this._onKey);
     const stage = this.stageRef.current;
