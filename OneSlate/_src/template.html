@@ -6473,7 +6473,11 @@ class Component extends DCLogic {
   // ---- recommended long-run distance (km): progress ~1 mi past your recent longest, capped at the
   // phase-appropriate target — replaces the old formula that pinned every long run to 12 km (7.5 mi).
   // Holds the long run flat once it's already a big share (>40%) of weekly volume — growth goes to
-  // midweek runs instead, so the long run settles back toward ~1/3 of the week rather than creeping past it. ----
+  // midweek runs instead — UNLESS there's an active race long-run target not yet reached: marathon
+  // training runs the long run up to 30-40%+ of the week by design at moderate volume (that's what
+  // marathonPlan()'s own "long run ~30-40% of weekly volume" base-building advice says), so the
+  // share throttle was fighting the coach's own guidance and freezing growth right where it should
+  // still be building. ----
   // `deload` scales the target down for a down week — applied HERE, once, so every caller
   // (the day's suggestion, the weekly template, and the completion-detection threshold below)
   // always agrees on the same number. Scaling it separately in each caller is how a deload-week
@@ -6481,9 +6485,11 @@ class Component extends DCLogic {
   _longTargetKm(s, base, mplan, deload) {
     const longGoalKm = (mplan && mplan.longTargetMi) ? mplan.longTargetMi / 0.621371 : Math.max(12.9, base * 0.42);
     const recentLongKm = s.longestRecentKm || 0;
-    const longShareHigh = base > 0 && recentLongKm > 0 && (recentLongKm / base) > 0.40;
+    const hasRaceTarget = !!(mplan && mplan.longTargetMi != null && mplan.weeksToRace != null);
+    const nearRaceTarget = hasRaceTarget && recentLongKm >= longGoalKm * 0.95;
+    const longShareHigh = (!hasRaceTarget || nearRaceTarget) && base > 0 && recentLongKm > 0 && (recentLongKm / base) > 0.40;
     let longKm = recentLongKm
-      ? (longShareHigh ? recentLongKm : Math.max(recentLongKm, Math.min(longGoalKm, recentLongKm + 1.6))) // hold flat if >40% of the week; else grow ~1 mi/wk
+      ? (longShareHigh ? recentLongKm : Math.max(recentLongKm, Math.min(longGoalKm, recentLongKm + 1.6))) // hold flat if >40% of the week (no active race target); else grow ~1 mi/wk toward the goal
       : Math.min(longGoalKm, Math.max(11.3, base * 0.35));                 // no recent long → conservative start
     longKm = Math.min(longKm, 42);
     return deload ? longKm * 0.75 : longKm;
