@@ -6217,11 +6217,33 @@ class Component extends DCLogic {
         const r = { runs: rows, settings: mergedSettings };
         this.setState({ running: r, runningLoaded: true, runningSeeded: false, runConn: conn.data || null, runSyncState: st.data || null });
         this.cacheRunning(r);
+        this._maybeAutoRaiseGoal(r);
         return;
       } catch (e) { /* fall through */ }
     }
     if (!this.state.runningLoaded && !this.state.running.runs.length) this.seedRunningLocal();
     this.setState({ runningLoaded: true });
+  }
+
+  // Keep the weekly ceiling tracking demonstrated fitness instead of a one-time guess going stale.
+  // Once your 4-week average closes to within 90% of the current goal, raise the goal ~15% and
+  // save it — so the ceiling stays a step ahead of real performance automatically and never sits
+  // there blocking growth (or, just as bad, looming as a far-off number you're not actually
+  // building toward yet). Only ever raises, never lowers — a rough week can't demote the goal.
+  _maybeAutoRaiseGoal(r) {
+    try {
+      const now = new Date();
+      const last28 = (r.runs || []).reduce((t, x) => {
+        const d = new Date(x.started_at);
+        return (now - d) < 28 * 864e5 ? t + (x.distance_km || 0) : t;
+      }, 0);
+      const avgWeekKm = last28 / 4;
+      const goalKm = (r.settings && r.settings.weekly_goal_km) || 48.28;
+      if (avgWeekKm >= goalKm * 0.9) {
+        const nextGoalKm = Math.round(avgWeekKm * 1.15);
+        if (nextGoalKm > goalKm) this.setWeeklyGoal(+(this.kmToMi(nextGoalKm)).toFixed(1));
+      }
+    } catch (e) {}
   }
 
   // Demo runs — same shape Strava fills (distance_km, moving_sec, started_at, type…).
