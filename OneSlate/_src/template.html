@@ -4111,7 +4111,12 @@ class Component extends DCLogic {
           let row = all[0];
           if (row && (row.duration_min || 0) < 45) { const fuller = all.find(r => (r.duration_min || 0) >= 45); if (fuller) row = fuller; }
           const hist = all.slice().reverse();
-          this.setState({ sleep: row, sleepHistory: hist, sleepSyncedAt: Date.now() });
+          // a new/changed night is exactly the "sleep uploaded" moment the coach's plan should
+          // be decided on — not the clock, not whatever the weather happens to be when you next
+          // open the app. Re-pin only when the row actually changed, not on every poll/focus refetch.
+          const prev = this.state.sleep;
+          const changed = !prev || prev.date !== row.date || prev.updated_at !== row.updated_at;
+          this.setState({ sleep: row, sleepHistory: hist, sleepSyncedAt: Date.now() }, () => { if (changed) this._refreshCoachPin(); });
           try { localStorage.setItem('oneslate:sleep', JSON.stringify({ row, hist, at: Date.now() })); } catch (e) {}
           return;
         }
@@ -6215,7 +6220,13 @@ class Component extends DCLogic {
         const mergedSettings = settings.data ? { ...settings.data } : { ...this.state.running.settings };
         if (!mergedSettings.race && prevRace) mergedSettings.race = prevRace;
         const r = { runs: rows, settings: mergedSettings };
-        this.setState({ running: r, runningLoaded: true, runningSeeded: false, runConn: conn.data || null, runSyncState: st.data || null });
+        // a newly-logged/synced run is new information for today's plan; a re-fetch that comes
+        // back identical (focus/poll) is not — only re-pin the coach's decision on the former.
+        const prevLatest = this.state.running.runs[0];
+        const newLatest = rows[0];
+        const runsChanged = (this.state.running.runs || []).length !== rows.length
+          || (prevLatest && newLatest && prevLatest.id !== newLatest.id);
+        this.setState({ running: r, runningLoaded: true, runningSeeded: false, runConn: conn.data || null, runSyncState: st.data || null }, () => { if (runsChanged) this._refreshCoachPin(); });
         this.cacheRunning(r);
         this._maybeAutoRaiseGoal(r);
         return;
@@ -6535,7 +6546,7 @@ class Component extends DCLogic {
     const cur = this._todayCheckin();
     const c = cur === feel ? { date: this.todayKey(), feel: null } : { date: this.todayKey(), feel };
     try { localStorage.setItem('oneslate:checkin', JSON.stringify(c)); } catch (e) {}
-    this.setState({ checkin: c });
+    this.setState({ checkin: c }, () => this._refreshCoachPin());
   }
   // ---- structured session library: turns "a workout" into an actual session with
   // paces from trainingPaces() and structure matched to the marathon phase. ----
@@ -6592,6 +6603,44 @@ class Component extends DCLogic {
     const seg = Math.max(4, Math.min(8, Math.round(longMi * 0.4)));
     const easyLead = Math.max(2, Math.round(longMi - seg));
     return { seg, pace: mpP, note: `run the first ${easyLead} mi easy, then close the last ${seg} mi at marathon pace (${mpP}) — rehearsing goal rhythm on tired legs is the single most race-specific session you'll do` };
+  }
+
+  // ---- pin the day's coach decision instead of silently recomputing it live every time the
+  // app is opened. buildCoach()/weekPlan() read this.state.weather, which changes through the
+  // day — so without this, the same morning could get a long run at 7am and "too hot" by the
+  // time you actually went out, with nothing about YOUR data having changed in between. Refresh
+  // only on things that are genuinely new information for today: a fresh night's sleep, a
+  // logged run, or a feel check-in — never on the clock or the weather alone. ----
+  _refreshCoachPin() {
+    try {
+      const today = this.todayKey();
+      let coach = null, wplan = null;
+      try { coach = this.buildCoach(); } catch (e) {}
+      try { wplan = this.weekPlan(); } catch (e) {}
+      const pin = { coach, wplan };
+      this.setState({ coachPinDate: today, coachPin: pin });
+      try { localStorage.setItem('oneslate:coachpin', JSON.stringify({ date: today, pin })); } catch (e) {}
+    } catch (e) {}
+  }
+  // Read-only accessor for render: today's pin if one exists, else a live (unpinned) compute —
+  // never writes state here (setState during render is unsafe), so this is safe to call every
+  // render. The localStorage check is memoized on `this` (not state) so a render loop — the
+  // 1Hz clock tick, for one — doesn't re-parse it every second while waiting for the real pin.
+  _pinnedCoach() {
+    const today = this.todayKey();
+    if (this.state.coachPinDate === today && this.state.coachPin) return this.state.coachPin;
+    if (!this._pinFallbackChecked) {
+      this._pinFallbackChecked = true;
+      try {
+        const cached = JSON.parse(localStorage.getItem('oneslate:coachpin'));
+        if (cached && cached.date === today && cached.pin) this._pinFallback = cached.pin;
+      } catch (e) {}
+    }
+    if (this._pinFallback) return this._pinFallback;
+    let coach = null, wplan = null;
+    try { coach = this.buildCoach(); } catch (e) {}
+    try { wplan = this.weekPlan(); } catch (e) {}
+    return { coach, wplan };
   }
 
   // ---- AI coach (grounded, on-device; no API key) ----
@@ -7121,7 +7170,7 @@ class Component extends DCLogic {
     };
     // optimistic local insert
     const local = { ...row, id: 'lr' + Date.now() };
-    this.setState(s => { const r = { ...s.running, runs: [local, ...s.running.runs] }; this.cacheRunning(r); return { running: r, runEditing: false, runningSeeded: false }; });
+    this.setState(s => { const r = { ...s.running, runs: [local, ...s.running.runs] }; this.cacheRunning(r); return { running: r, runEditing: false, runningSeeded: false }; }, () => this._refreshCoachPin());
     if (this._sb && this.state.user) {
       try {
         const { data } = await this._sb.from('runs').insert({ ...row, user_id: this.state.user.id }).select().single();
@@ -7130,7 +7179,7 @@ class Component extends DCLogic {
     }
   }
   async deleteRun(id) {
-    this.setState(s => { const r = { ...s.running, runs: s.running.runs.filter(x => x.id !== id) }; this.cacheRunning(r); return { running: r }; });
+    this.setState(s => { const r = { ...s.running, runs: s.running.runs.filter(x => x.id !== id) }; this.cacheRunning(r); return { running: r }; }, () => this._refreshCoachPin());
     if (this._sb && this.state.user && !String(id).startsWith('lr') && !String(id).startsWith('dr')) {
       try { await this._sb.from('runs').delete().eq('id', id).eq('user_id', this.state.user.id); } catch (e) {}
     }
@@ -9126,8 +9175,7 @@ class Component extends DCLogic {
       weekBars.push({ km, label: i === 0 ? 'now' : `${i}w` });
     }
     const weekBarsV = weekBars.map(w => ({ h: maxWk ? Math.max(2, Math.round(w.km / maxWk * 100)) + '%' : '2%', label: w.label, mi: this.kmToMi(w.km).toFixed(0), now: w.label === 'now', barColor: w.label === 'now' ? 'var(--accent)' : 'var(--fg-3)' }));
-    const coach = this.buildCoach();
-    const wplan = this.weekPlan();
+    const { coach, wplan } = this._pinnedCoach();
     const training = this.trainingPaces();
     const mplan = this.marathonPlan();
     const raceCfg = this.raceCfg();
