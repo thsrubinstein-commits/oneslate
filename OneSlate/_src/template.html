@@ -6629,8 +6629,9 @@ class Component extends DCLogic {
   _pinnedCoach() {
     const today = this.todayKey();
     if (this.state.coachPinDate === today && this.state.coachPin) return this.state.coachPin;
-    if (!this._pinFallbackChecked) {
-      this._pinFallbackChecked = true;
+    // memoized per-DAY (not forever): a cached pin from a previous day must never be served as today's
+    if (this._pinFallbackDate !== today) {
+      this._pinFallbackDate = today; this._pinFallback = null;
       try {
         const cached = JSON.parse(localStorage.getItem('oneslate:coachpin'));
         if (cached && cached.date === today && cached.pin) this._pinFallback = cached.pin;
@@ -7603,17 +7604,21 @@ class Component extends DCLogic {
       }
     } catch (e) {}
 
-    this._clock = setInterval(() => this.setState({ now: new Date() }), 1000);
+    this._clock = setInterval(() => {
+      this.setState({ now: new Date() });
+      // a new calendar day with no pin yet → decide today's workout now, instead of waiting for sleep/run data to change
+      if (this.state.coachPinDate !== this.todayKey() && this._pinDayTried !== this.todayKey()) { this._pinDayTried = this.todayKey(); this._refreshCoachPin(); }
+    }, 1000);
     if (!this._restored) this.loadWeather();
     try { const mo = localStorage.getItem('oneslate:merchantOverrides'); if (mo) this.setState({ merchantOverrides: JSON.parse(mo) }); } catch (e) {}
     this.initCloud();
-    this._onFocus = () => { this.fetchSleep(); this.fetchNutrition(); };
+    this._onFocus = () => { this.fetchSleep(); this.fetchNutrition(); this.fetchRunning(); };
     window.addEventListener('focus', this._onFocus);
     // WKWebView doesn't fire window focus when you switch tabs in the native app; these do.
     this._onVisible = () => { if (document.visibilityState === 'visible') this._onFocus(); };
     document.addEventListener('visibilitychange', this._onVisible);
     window.addEventListener('pageshow', this._onFocus);
-    this._sleepPoll = setInterval(() => this.fetchSleep(), 15 * 60 * 1000);
+    this._sleepPoll = setInterval(() => { this.fetchSleep(); this.fetchRunning(); }, 15 * 60 * 1000);
 
     const stage = this.stageRef.current;
     if (stage) {
