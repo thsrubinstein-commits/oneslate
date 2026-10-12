@@ -2305,7 +2305,7 @@ button, input, textarea, select, [role="button"] {
                   <span style="font-size:13px; color:var(--fg-2); line-height:1.65;">{{ mplanAdvice }}</span>
                   <div style="display:flex; gap:22px; flex-wrap:wrap;">
                     <sc-if value="{{ showMplanLong }}" hint-placeholder-val="{{ false }}">
-                      <div style="display:flex; flex-direction:column; gap:2px;"><span style="font-size:9px; letter-spacing:0.12em; text-transform:uppercase; color:var(--fg-4);">Long run target</span><span style="font-size:16px; font-weight:600; color:var(--fg-1);">{{ mplanLongLabel }}</span></div>
+                      <div style="display:flex; flex-direction:column; gap:2px;"><span style="font-size:9px; letter-spacing:0.12em; text-transform:uppercase; color:var(--fg-4);">Long run ceiling</span><span style="font-size:16px; font-weight:600; color:var(--fg-1);">{{ mplanLongLabel }}</span></div>
                     </sc-if>
                     <div style="display:flex; flex-direction:column; gap:2px;"><span style="font-size:9px; letter-spacing:0.12em; text-transform:uppercase; color:var(--fg-4);">To race</span><span style="font-size:16px; font-weight:600; color:var(--fg-1);">{{ mplanWeeksLabel }}</span></div>
                   </div>
@@ -7064,18 +7064,21 @@ class Component extends DCLogic {
     const cfg = this.raceCfg();
     const s = this.runStats();
     const tp = this.trainingPaces();
-    const avgWeekMi = this.kmToMi(s.avgWeekKm || 0);
     let weeksToRace = null;
     if (cfg.date) { const d = new Date(cfg.date + 'T00:00:00'); if (!isNaN(d)) weeksToRace = Math.max(0, Math.ceil((d - new Date()) / (7 * 864e5))); }
     const distLabel = { marathon: 'Marathon', half: 'Half marathon', '10k': '10K', '5k': '5K' }[cfg.dist] || 'Marathon';
 
     let phase = '', advice = '', longTargetMi = null;
     if (cfg.dist === 'marathon') {
-      longTargetMi = Math.min(22, Math.max(10, Math.round(avgWeekMi * 0.35)));
+      // Long-run ceiling comes from the RACE SCHEDULE, not from current weekly volume. It used to be
+      // 35% of the 4-week average (floor 10), which pinned a 17-25 mi/wk runner at 10 mi indefinitely —
+      // the long run has to lead the build toward the marathon, not trail it. The weekly ~1 mi step
+      // (_longTargetKm) still sets the pace; this is just how high it's allowed to climb at each stage.
+      longTargetMi = weeksToRace == null ? 18 : weeksToRace > 20 ? 18 : weeksToRace > 8 ? 20 : 22;
       if (weeksToRace == null) { phase = 'Set a race date'; advice = 'Add your race date to get a week-by-week build and taper. For now, keep long runs growing and most miles easy.'; }
       else if (weeksToRace <= 2) { phase = `Taper · ${weeksToRace} wk out`; advice = 'Cut volume ~30–50% but keep a little marathon-pace work so the legs stay sharp. Prioritize sleep, carbs, and hydration. Trust the fitness you built — don\'t cram.'; longTargetMi = Math.min(12, longTargetMi); }
       else if (weeksToRace <= 8) { phase = `Sharpening · ${weeksToRace} wk out`; advice = `Peak phase. Build the long run toward 18–22 mi and fold ${tp ? tp.zones[2].range : 'marathon-pace'} segments into it. Hold one threshold session weekly; keep everything else easy.`; }
-      else { phase = `Base building · ${weeksToRace} wk out`; advice = 'Grow weekly mileage ~10% per week, long run ~30–40% of your weekly volume, almost all of it easy. Consistency now pays off later.'; }
+      else { phase = `Base building · ${weeksToRace} wk out`; advice = 'Grow weekly mileage ~10% per week, the long run up about a mile a week (lighter every 4th week), almost all of it easy. Consistency now pays off later.'; }
     } else {
       advice = `Training paces below are scaled to your ${distLabel} goal. Keep most miles easy, one threshold session weekly, and sharpen with intervals as the race nears.`;
     }
