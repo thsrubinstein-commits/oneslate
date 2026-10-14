@@ -4742,13 +4742,28 @@ class Component extends DCLogic {
       relockMin: typeof d.relockMin === 'number' ? d.relockMin : prev.relockMin,
       cabinetCats: (Array.isArray(d.cabinetCats) && d.cabinetCats.length) ? d.cabinetCats : prev.cabinetCats,
       prefs: (d.prefs && typeof d.prefs === 'object') ? { ...prev.prefs, ...d.prefs } : prev.prefs,
+      ...(() => {
+        // newest write wins, strictly newer only — so adopting never ping-pongs between devices
+        const rs = (d.raceSync && d.raceSync.race && (d.raceSync.at || 0) > ((prev.raceSync && prev.raceSync.at) || 0)) ? d.raceSync : null;
+        const cp = (d.coachPinSync && d.coachPinSync.pin && d.coachPinSync.date === this.todayKey() && (d.coachPinSync.at || 0) > (prev.coachPinAt || 0)) ? d.coachPinSync : null;
+        const out = {};
+        if (rs) { out.raceSync = rs; out.running = { ...prev.running, settings: { ...prev.running.settings, race: rs.race } }; }
+        if (cp) { out.coachPinDate = cp.date; out.coachPin = cp.pin; out.coachPinAt = cp.at; }
+        return out;
+      })(),
       nutrition: (d.nutrition && typeof d.nutrition === 'object') ? { targets: { ...prev.nutrition.targets, ...(d.nutrition.targets || {}) }, log: (d.nutrition.log && typeof d.nutrition.log === 'object') ? d.nutrition.log : prev.nutrition.log, micros: (d.nutrition.micros && typeof d.nutrition.micros === 'object') ? d.nutrition.micros : prev.nutrition.micros } : prev.nutrition,
-    }), () => { this.purgeDemo(); try { localStorage.setItem('oneslate:v2', JSON.stringify(this.boardData())); } catch (e) {} });
+    }), () => {
+      this.purgeDemo();
+      try { localStorage.setItem('oneslate:v2', JSON.stringify(this.boardData())); } catch (e) {}
+      // keep this device's local caches in step with what was just adopted
+      try { if (this.state.running) this.cacheRunning(this.state.running); } catch (e) {}
+      try { if (this.state.coachPin && this.state.coachPinDate) localStorage.setItem('oneslate:coachpin', JSON.stringify({ date: this.state.coachPinDate, pin: this.state.coachPin })); } catch (e) {}
+    });
   }
 
   boardData() {
     const { cards, dayLogs, completed, panX, panY, zoom, locations, locId, firstDay, navApps, vaultEnabled, vaultHash, relockMin, cabinetCats, prefs, nutrition, _deleted, events, eventsDeleted, classes, classesDeleted } = this.state;
-    return { cards, dayLogs, completed, panX, panY, zoom, locations, locId, firstDay, navApps, vaultEnabled, vaultHash, relockMin, cabinetCats, prefs, nutrition, _deleted, events, eventsDeleted, classes, classesDeleted, _client: this._clientId };
+    return { cards, dayLogs, completed, panX, panY, zoom, locations, locId, firstDay, navApps, vaultEnabled, vaultHash, relockMin, cabinetCats, prefs, nutrition, _deleted, events, eventsDeleted, classes, classesDeleted, raceSync: this.state.raceSync || null, coachPinSync: (this.state.coachPin && this.state.coachPinDate) ? { date: this.state.coachPinDate, pin: this.state.coachPin, at: this.state.coachPinAt || 0 } : null, _client: this._clientId };
   }
 
   saveCloud(immediate) {
@@ -6618,7 +6633,7 @@ class Component extends DCLogic {
       try { coach = this.buildCoach(); } catch (e) {}
       try { wplan = this.weekPlan(); } catch (e) {}
       const pin = { coach, wplan };
-      this.setState({ coachPinDate: today, coachPin: pin });
+      this.setState({ coachPinDate: today, coachPin: pin, coachPinAt: Date.now() }, () => this.persist());
       try { localStorage.setItem('oneslate:coachpin', JSON.stringify({ date: today, pin })); } catch (e) {}
     } catch (e) {}
   }
@@ -7014,7 +7029,10 @@ class Component extends DCLogic {
     }
     const race = { dist: dist || this.raceCfg().dist, goalSec, date: (dateStr && dateStr.trim()) || null };
     const settings = { ...this.state.running.settings, race };
-    this.setState(s => { const r = { ...s.running, settings }; this.cacheRunning(r); return { running: r }; });
+    // running_settings has no `race` column on the live DB, so that upsert below silently fails and the race
+    // was only ever saved on THIS device — phone and computer then trained toward different dates/phases.
+    // The board payload already syncs live across devices, so the race rides along there.
+    this.setState(s => { const r = { ...s.running, settings }; this.cacheRunning(r); return { running: r, raceSync: { race, at: Date.now() } }; }, () => this._refreshCoachPin());
     if (this._sb && this.state.user) {
       try { this._sb.from('running_settings').upsert({ user_id: this.state.user.id, race, updated_at: new Date().toISOString() }).then(() => {}, () => {}); } catch (e) {}
     }
