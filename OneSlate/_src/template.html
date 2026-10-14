@@ -4757,6 +4757,11 @@ class Component extends DCLogic {
       try { localStorage.setItem('oneslate:v2', JSON.stringify(this.boardData())); } catch (e) {}
       // keep this device's local caches in step with what was just adopted
       try { if (this.state.running) this.cacheRunning(this.state.running); } catch (e) {}
+      try {
+        const lostRace = this.state.raceSync && !d.raceSync;
+        const lostPin = this.state.coachPin && this.state.coachPinDate === this.todayKey() && !d.coachPinSync;
+        if (lostRace || lostPin) this.persist();
+      } catch (e) {}
       try { if (this.state.coachPin && this.state.coachPinDate) localStorage.setItem('oneslate:coachpin', JSON.stringify({ date: this.state.coachPinDate, pin: this.state.coachPin })); } catch (e) {}
     });
   }
@@ -7619,6 +7624,8 @@ class Component extends DCLogic {
           relockMin: typeof s.relockMin === 'number' ? s.relockMin : prev.relockMin,
           cabinetCats: (Array.isArray(s.cabinetCats) && s.cabinetCats.length) ? s.cabinetCats : prev.cabinetCats,
           prefs: (s.prefs && typeof s.prefs === 'object') ? { ...prev.prefs, ...s.prefs } : prev.prefs,
+          raceSync: s.raceSync || prev.raceSync,
+          ...((s.coachPinSync && s.coachPinSync.pin && s.coachPinSync.date === this.todayKey()) ? { coachPinDate: s.coachPinSync.date, coachPin: s.coachPinSync.pin, coachPinAt: s.coachPinSync.at || 0 } : {}),
           nutrition: (s.nutrition && typeof s.nutrition === 'object') ? { targets: { ...prev.nutrition.targets, ...(s.nutrition.targets || {}) }, log: (s.nutrition.log && typeof s.nutrition.log === 'object') ? s.nutrition.log : prev.nutrition.log, micros: (s.nutrition.micros && typeof s.nutrition.micros === 'object') ? s.nutrition.micros : prev.nutrition.micros } : prev.nutrition,
         }), () => { this.loadWeather(); this.purgeDemo(); });
         this._restored = true;
