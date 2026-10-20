@@ -4745,7 +4745,7 @@ class Component extends DCLogic {
       ...(() => {
         // newest write wins, strictly newer only — so adopting never ping-pongs between devices
         const rs = (d.raceSync && d.raceSync.race && (d.raceSync.at || 0) > ((prev.raceSync && prev.raceSync.at) || 0)) ? d.raceSync : null;
-        const cp = (d.coachPinSync && d.coachPinSync.pin && d.coachPinSync.date === this.todayKey() && (d.coachPinSync.at || 0) > (prev.coachPinAt || 0)) ? d.coachPinSync : null;
+        const cp = (d.coachPinSync && this._pinFresh(d.coachPinSync.date, d.coachPinSync.pin) && (d.coachPinSync.at || 0) > (prev.coachPinAt || 0)) ? d.coachPinSync : null;
         const out = {};
         if (rs) { out.raceSync = rs; out.running = { ...prev.running, settings: { ...prev.running.settings, race: rs.race } }; }
         if (cp) { out.coachPinDate = cp.date; out.coachPin = cp.pin; out.coachPinAt = cp.at; }
@@ -6298,7 +6298,10 @@ class Component extends DCLogic {
     const monthKm = sum(monStart, null);
     const last7 = sum(new Date(now.getTime() - 7 * 864e5), null);
     const last28 = sum(new Date(now.getTime() - 28 * 864e5), null);
-    const daysSince = runs.length ? Math.floor((now - runs[0]._d) / 864e5) : null;
+    // calendar days, not elapsed 24h blocks — a Sunday-noon run checked at 11am Tuesday is 2 days
+    // ago, not 1 (the old floor((now - run) / 24h) called it "yesterday" and forced a recovery day)
+    const dayStart = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const daysSince = runs.length ? Math.round((dayStart(now) - dayStart(runs[0]._d)) / 864e5) : null;
     // consistency: weeks (of last 4) with ≥1 run
     let weeksActive = 0;
     for (let i = 0; i < 4; i++) {
@@ -6631,13 +6634,17 @@ class Component extends DCLogic {
   // time you actually went out, with nothing about YOUR data having changed in between. Refresh
   // only on things that are genuinely new information for today: a fresh night's sleep, a
   // logged run, or a feel check-in — never on the clock or the weather alone. ----
+  // bump when the coach's decision logic changes, so a pin made by older logic today is recomputed
+  // instead of being served (or adopted from another device) for the rest of the day
+  get COACH_PIN_V() { return 3; }
+  _pinFresh(date, pin) { return date === this.todayKey() && !!pin && pin.v === this.COACH_PIN_V; }
   _refreshCoachPin() {
     try {
       const today = this.todayKey();
       let coach = null, wplan = null;
       try { coach = this.buildCoach(); } catch (e) {}
       try { wplan = this.weekPlan(); } catch (e) {}
-      const pin = { coach, wplan };
+      const pin = { coach, wplan, v: this.COACH_PIN_V };
       this.setState({ coachPinDate: today, coachPin: pin, coachPinAt: Date.now() }, () => this.persist());
       try { localStorage.setItem('oneslate:coachpin', JSON.stringify({ date: today, pin })); } catch (e) {}
     } catch (e) {}
@@ -6648,13 +6655,13 @@ class Component extends DCLogic {
   // 1Hz clock tick, for one — doesn't re-parse it every second while waiting for the real pin.
   _pinnedCoach() {
     const today = this.todayKey();
-    if (this.state.coachPinDate === today && this.state.coachPin) return this.state.coachPin;
+    if (this._pinFresh(this.state.coachPinDate, this.state.coachPin)) return this.state.coachPin;
     // memoized per-DAY (not forever): a cached pin from a previous day must never be served as today's
     if (this._pinFallbackDate !== today) {
       this._pinFallbackDate = today; this._pinFallback = null;
       try {
         const cached = JSON.parse(localStorage.getItem('oneslate:coachpin'));
-        if (cached && cached.date === today && cached.pin) this._pinFallback = cached.pin;
+        if (cached && this._pinFresh(cached.date, cached.pin)) this._pinFallback = cached.pin;
       } catch (e) {}
     }
     if (this._pinFallback) return this._pinFallback;
@@ -6718,6 +6725,8 @@ class Component extends DCLogic {
 
     // ---- true rest day: only when there's a clear risk/fatigue reason (never a default) ----
     const feel = this._todayCheckin();
+    // one-off manual override: long run on this date only (inert every other day; skipped if you flag sick)
+    const longToday = this.todayKey() === '2026-10-20' && feel !== 'sick';
     const recentHard = s.runs.filter(r => (Date.now() - r._d) < 2 * 864e5 && (r.type === 'workout' || r.type === 'long' || r.type === 'race')).length;
     const twoHard = recentHard >= 2;
     const restReason = feel === 'sick'
@@ -6730,12 +6739,12 @@ class Component extends DCLogic {
       ? `That's two hard days back to back. A full rest day here protects your next workout — a third hard day in a row is how easy miles quietly turn into junk miles and injuries.`
       : null;
 
-    if (restReason) {
+    if (restReason && !longToday) {
       nextType = 'rest'; nextKm = 0;
       headline = feel === 'sick' ? 'Rest and recover' : 'Rest day';
       body = restReason;
       push = ['rest', '#c9b87e'];
-    } else if (days >= 4) {
+    } else if (!longToday && days >= 4) {
       nextType = 'easy';
       const rust = days >= 14 ? 'reset' : days >= 7 ? 'faded' : 'break';
       nextKm = rust === 'reset' ? Math.max(3.5, Math.min(5, base * 0.10))
@@ -6748,22 +6757,22 @@ class Component extends DCLogic {
         ? `You're back after ${days} days off. Keep the first run or two easy and short — about ${r1(mi(nextKm))} mi — to re-acclimate; no long run or workout yet. Once you've strung a couple of easy days together, normal progression resumes.`
         : `You're back after a ${days}-day break. Make the first run an easy, conversational ${r1(mi(nextKm))} mi to find your rhythm — hold off on the long run or a workout until you've logged a couple of easy days. Your fitness hasn't gone anywhere.`;
       push = ['ease in', 'var(--fg-2)'];
-    } else if (lowReady && days <= 3) {
+    } else if (!longToday && lowReady && days <= 3) {
       nextType = 'easy'; nextKm = Math.max(3.5, Math.min(6.5, base * 0.1));
       headline = `Recovery low (${ready}/100) — hold back`;
       body = `Your body is under-recovered today${readyPart ? ' (' + readyPart + ')' : ''}. Rest, or keep it a short easy shakeout — progression is built by absorbing training, not forcing it. Push again once recovery climbs back to baseline.`;
       push = ['recover', '#c9b87e'];
-    } else if (s.acwr > 1.5) {
+    } else if (!longToday && s.acwr > 1.5) {
       nextType = 'easy'; nextKm = Math.max(5, base * 0.14);
       headline = 'Load spiking — absorb it';
       body = `Your last 7 days (${r1(mi(s.last7))} mi) sit well above your 4-week average (${r1(mi(base))} mi). Keep the next one easy and short — injuries cluster after ramps this fast. Let the load settle before adding more.`;
       push = ['ease up', 'var(--accent)'];
-    } else if (yesterdayHard) {
+    } else if (!longToday && yesterdayHard) {
       nextType = 'easy'; nextKm = Math.max(4, base * 0.13);
       headline = 'Recovery day';
       body = `Yesterday was a ${s.lastRun.type === 'long' ? 'long run' : 'harder session'}. Follow it with an easy, conversational run (or rest) so the adaptation sticks. Save intensity for 48h out.`;
       push = ['recover', 'var(--fg-2)'];
-    } else if (!hadLong && remainKm > base * 0.25 && (ready == null || ready >= 55)) {
+    } else if (longToday || (!hadLong && remainKm > base * 0.25 && (ready == null || ready >= 55))) {
       nextType = 'long';
       nextKm = this._longTargetKm(s, base, mp, deloadWeek);
       const stepFromLast = !deloadWeek && s.longestRecentKm && nextKm > s.longestRecentKm + 0.3;
@@ -7625,7 +7634,7 @@ class Component extends DCLogic {
           cabinetCats: (Array.isArray(s.cabinetCats) && s.cabinetCats.length) ? s.cabinetCats : prev.cabinetCats,
           prefs: (s.prefs && typeof s.prefs === 'object') ? { ...prev.prefs, ...s.prefs } : prev.prefs,
           raceSync: s.raceSync || prev.raceSync,
-          ...((s.coachPinSync && s.coachPinSync.pin && s.coachPinSync.date === this.todayKey()) ? { coachPinDate: s.coachPinSync.date, coachPin: s.coachPinSync.pin, coachPinAt: s.coachPinSync.at || 0 } : {}),
+          ...((s.coachPinSync && this._pinFresh(s.coachPinSync.date, s.coachPinSync.pin)) ? { coachPinDate: s.coachPinSync.date, coachPin: s.coachPinSync.pin, coachPinAt: s.coachPinSync.at || 0 } : {}),
           nutrition: (s.nutrition && typeof s.nutrition === 'object') ? { targets: { ...prev.nutrition.targets, ...(s.nutrition.targets || {}) }, log: (s.nutrition.log && typeof s.nutrition.log === 'object') ? s.nutrition.log : prev.nutrition.log, micros: (s.nutrition.micros && typeof s.nutrition.micros === 'object') ? s.nutrition.micros : prev.nutrition.micros } : prev.nutrition,
         }), () => { this.loadWeather(); this.purgeDemo(); });
         this._restored = true;
@@ -7634,8 +7643,8 @@ class Component extends DCLogic {
 
     this._clock = setInterval(() => {
       this.setState({ now: new Date() });
-      // a new calendar day with no pin yet → decide today's workout now, instead of waiting for sleep/run data to change
-      if (this.state.coachPinDate !== this.todayKey() && this._pinDayTried !== this.todayKey()) { this._pinDayTried = this.todayKey(); this._refreshCoachPin(); }
+      // a new calendar day (or a pin from older coach logic) → decide today's workout now, instead of waiting for sleep/run data to change
+      if (!this._pinFresh(this.state.coachPinDate, this.state.coachPin) && this._pinDayTried !== this.todayKey()) { this._pinDayTried = this.todayKey(); this._refreshCoachPin(); }
     }, 1000);
     if (!this._restored) this.loadWeather();
     try { const mo = localStorage.getItem('oneslate:merchantOverrides'); if (mo) this.setState({ merchantOverrides: JSON.parse(mo) }); } catch (e) {}
