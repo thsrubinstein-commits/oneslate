@@ -6313,8 +6313,41 @@ class Component extends DCLogic {
 
   // ---- running stats (weekly/monthly volume, consistency, load) ----
   _startOfWeek(d) { const x = new Date(d); const dow = (x.getDay() + 6) % 7; x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - dow); return x; } // Monday
+  // One continuous run that got recorded as two activities — the watch died and the rest was finished in
+  // the phone app, or a warm-up/cool-down logged separately — is stored as two rows. Left alone, the coach
+  // sees a short "last run" (so it misses that you just did a long run and can skip the recovery day), under-
+  // counts the longest run, and counts an extra run. Fold activities that pick up where the previous one left
+  // off (starts within 20 min of its end) into one. Compute-layer only: the stored rows are never touched,
+  // so deleting/editing either piece in Recent Runs still works. Input: runs with `_d`; output: newest first.
+  _mergeSplitRuns(list) {
+    const rank = { race: 3, long: 2, workout: 1 };
+    const asc = (list || []).slice().sort((a, b) => a._d - b._d);
+    const out = [];
+    for (const r of asc) {
+      const cur = out[out.length - 1];
+      const curEnd = cur && cur.moving_sec > 0 ? cur._d.getTime() + cur.moving_sec * 1000 : null;
+      const gap = curEnd == null ? null : r._d.getTime() - curEnd;
+      if (cur && r.moving_sec > 0 && gap != null && gap >= -120000 && gap <= 20 * 60000) {
+        const w1 = cur.moving_sec, w2 = r.moving_sec;
+        const hr = (cur.avg_hr && r.avg_hr) ? Math.round((cur.avg_hr * w1 + r.avg_hr * w2) / (w1 + w2)) : (cur.avg_hr || r.avg_hr || null);
+        const dist = (cur.distance_km || 0) + (r.distance_km || 0), sec = w1 + w2;
+        out[out.length - 1] = {
+          ...cur,
+          name: [cur.name, r.name].filter(Boolean).join(' + '),
+          type: (rank[r.type] || 0) > (rank[cur.type] || 0) ? r.type : cur.type,
+          distance_km: dist, moving_sec: sec,
+          avg_pace_sec_km: dist ? Math.round(sec / dist) : null,
+          avg_hr: hr, max_hr: Math.max(cur.max_hr || 0, r.max_hr || 0) || null,
+          elev_gain_m: (cur.elev_gain_m != null || r.elev_gain_m != null) ? (cur.elev_gain_m || 0) + (r.elev_gain_m || 0) : null,
+          stream: undefined, splits: undefined, // two separate recordings — no single continuous stream
+          merged_from: (cur.merged_from || [cur.id]).concat([r.id]),
+        };
+      } else out.push(r);
+    }
+    return out.sort((a, b) => b._d - a._d);
+  }
   runStats() {
-    const runs = (this.state.running.runs || []).map(r => ({ ...r, _d: new Date(r.started_at) })).sort((a, b) => b._d - a._d);
+    const runs = this._mergeSplitRuns((this.state.running.runs || []).map(r => ({ ...r, _d: new Date(r.started_at) })));
     const now = new Date();
     const wkStart = this._startOfWeek(now);
     const lastWkStart = new Date(wkStart); lastWkStart.setDate(lastWkStart.getDate() - 7);
@@ -6400,7 +6433,7 @@ class Component extends DCLogic {
   // Select the run(s) a question is about (day/keyword/distance), plus recent runs for
   // aggregate questions. Returns { runs: recent[<=6], focus: matched[], cited: labels[] }.
   runsForContext(question) {
-    const runs = (this.state.running.runs || []).map(r => ({ ...r, _d: new Date(r.started_at) })).sort((a, b) => b._d - a._d);
+    const runs = this._mergeSplitRuns((this.state.running.runs || []).map(r => ({ ...r, _d: new Date(r.started_at) })));
     if (!runs.length) return { runs: [], focus: [], cited: [] };
     const q = (question || '').toLowerCase();
     const recent = runs.slice(0, 6).map(r => this._runBrief(r).brief);
@@ -6663,7 +6696,7 @@ class Component extends DCLogic {
   // logged run, or a feel check-in — never on the clock or the weather alone. ----
   // bump when the coach's decision logic changes, so a pin made by older logic today is recomputed
   // instead of being served (or adopted from another device) for the rest of the day
-  get COACH_PIN_V() { return 3; }
+  get COACH_PIN_V() { return 4; }
   _pinFresh(date, pin) { return date === this.todayKey() && !!pin && pin.v === this.COACH_PIN_V; }
   _refreshCoachPin() {
     try {
