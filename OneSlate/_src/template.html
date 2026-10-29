@@ -6639,21 +6639,50 @@ class Component extends DCLogic {
     if (/sharpen/i.test(p)) return 'sharpen';
     return 'base';
   }
-  // the day's quality session, by phase. returns {name, sets, pace, cue}.
-  _qualityWorkout(phase, base, tp) {
+  // rough per-zone pace in sec/mi (midpoints of the trainingPaces() bands) — used to turn a day's
+  // mileage into minutes so the session's structure actually adds up to the distance it promises.
+  _zoneSec(tp) {
+    if (!tp || !tp.mpSecMi) return null;
+    const a = tp.mpSecMi;
+    return { easy: a + 75, jog: a + 105, thr: a - 16, int: a - 40, mp: (tp.raceMpSecMi || a) + 1 };
+  }
+  // the day's quality session, by phase. returns {name, sets, pace, cue, workMi} — workMi is the
+  // ground covered by the main set (reps + jogs), so the warm-up/cool-down can fill the rest.
+  // totalKm (optional) scales the main set to the day's distance: a longer day = a longer tempo.
+  _qualityWorkout(phase, base, tp, totalKm) {
     const z = n => (tp && tp.zones) ? (tp.zones.find(x => x.name === n) || null) : null;
     const thr = z('Threshold'), mpz = z('Marathon');
     const thrP = thr ? thr.range : 'comfortably hard';
+    const Z = this._zoneSec(tp), totMi = totalKm ? totalKm / 1.609344 : null;
     if (phase === 'taper') {
       return { name: 'Marathon-pace tune-up', sets: '2–3 × 1 mi @ marathon pace, 2 min easy jog between',
-        pace: mpz ? mpz.range : 'goal pace', cue: 'Sharp but easy — stay crisp, don\'t build. Finish with gas in the tank.' };
+        pace: mpz ? mpz.range : 'goal pace', cue: 'Sharp but easy — stay crisp, don\'t build. Finish with gas in the tank.',
+        workMi: Z ? 3 + 240 / Z.jog : null };
     }
     if (phase === 'sharpen') {
-      return { name: 'Cruise intervals', sets: '4–5 × 1 mi @ threshold, 90 s jog between',
-        pace: thrP, cue: 'Comfortably hard and repeatable — never a race. Finish feeling you could do one more.' };
+      const reps = totMi ? Math.max(3, Math.min(6, Math.round(totMi * 0.55))) : null;
+      return { name: 'Cruise intervals', sets: `${reps || '4–5'} × 1 mi @ threshold, 90 s jog between`,
+        pace: thrP, cue: 'Comfortably hard and repeatable — never a race. Finish feeling you could do one more.',
+        workMi: Z ? (reps || 5) + ((reps || 5) - 1) * 90 / Z.jog : null };
     }
-    return { name: 'Continuous tempo', sets: '15–25 min continuous @ threshold (grow it across the block)',
-      pace: thrP, cue: 'Comfortably hard and steady — "hard to talk" but not gasping.' };
+    // ~4.3 min of tempo per mile of the day, in 5-min steps, held to 15–40 min — so the tempo grows
+    // with the day's distance (7 mi → 30 min) instead of a fixed 15–25 min that left the rest unexplained.
+    const tMin = totMi ? Math.max(15, Math.min(40, Math.round(totMi * 4.3 / 5) * 5)) : null;
+    return { name: 'Continuous tempo', sets: tMin ? `${tMin} min continuous @ threshold` : '15–25 min continuous @ threshold (grow it across the block)',
+      pace: thrP, cue: 'Comfortably hard and steady — "hard to talk" but not gasping.',
+      workMi: Z ? (tMin || 20) * 60 / Z.thr : null };
+  }
+  // warm-up / cool-down minutes that fill the gap between the main set and the day's distance.
+  // The warm-up only needs to prime you (10–15 min); any extra easy time goes AFTER the main set,
+  // so the quality work happens on fresh legs and the leftover miles are cheap aerobic volume.
+  // returns {wu, cd, totalMin} or null when there are no paces to convert with.
+  _sessionWrap(W, totalKm, tp) {
+    const Z = this._zoneSec(tp);
+    if (!Z || !W || W.workMi == null || !totalKm) return null;
+    const easyMin = Math.max(20, (totalKm / 1.609344 - W.workMi) * Z.easy / 60);
+    const wu = easyMin >= 25 ? 15 : 10;
+    const cd = Math.max(10, Math.round((easyMin - wu) / 5) * 5);
+    return { wu, cd, totalMin: Math.round(wu + cd + W.workMi * (Z.thr + Z.easy) / 2 / 60) };
   }
   // the day's SPEED session (VO2max/5K-effort short reps), by phase — a distinct, faster stimulus
   // from the tempo/threshold work above. Raises your ceiling (running economy + top-end speed)
@@ -6662,16 +6691,20 @@ class Component extends DCLogic {
     const z = n => (tp && tp.zones) ? (tp.zones.find(x => x.name === n) || null) : null;
     const intz = z('Interval');
     const intP = intz ? intz.range : 'fast but controlled — roughly 5K effort';
+    const Z = this._zoneSec(tp);
     if (phase === 'taper') {
       return { name: 'Speed tune-up · strides', sets: '6 × 20s fast, relaxed strides with full recovery, tacked onto an easy run',
-        pace: 'fast, relaxed', cue: 'Sharp and short — wake the legs up without creating fatigue this close to race day.' };
+        pace: 'fast, relaxed', cue: 'Sharp and short — wake the legs up without creating fatigue this close to race day.',
+        workMi: Z ? 0.5 : null };
     }
     if (phase === 'sharpen') {
       return { name: 'VO2max intervals', sets: '5–6 × 800m @ interval pace, 2–3 min jog recovery',
-        pace: intP, cue: 'Hard but repeatable — the same pace on rep 1 and rep 6. This raises your ceiling, not your marathon fitness, so keep the volume modest.' };
+        pace: intP, cue: 'Hard but repeatable — the same pace on rep 1 and rep 6. This raises your ceiling, not your marathon fitness, so keep the volume modest.',
+        workMi: Z ? 6 * 0.497 + 5 * 150 / Z.jog : null };
     }
     return { name: 'Speed intro · short reps', sets: '6–8 × 400m @ interval pace, 90s jog recovery',
-      pace: intP, cue: 'Fast but relaxed form — short enough to stay controlled. Builds leg speed and running economy without real fatigue.' };
+      pace: intP, cue: 'Fast but relaxed form — short enough to stay controlled. Builds leg speed and running economy without real fatigue.',
+      workMi: Z ? 8 * 0.2486 + 7 * 90 / Z.jog : null };
   }
   // deterministic tempo/speed alternation so both show up across the block without needing to
   // parse past workout names — even weeks lead with tempo, odd weeks lead with speed.
@@ -6696,7 +6729,7 @@ class Component extends DCLogic {
   // logged run, or a feel check-in — never on the clock or the weather alone. ----
   // bump when the coach's decision logic changes, so a pin made by older logic today is recomputed
   // instead of being served (or adopted from another device) for the rest of the day
-  get COACH_PIN_V() { return 4; }
+  get COACH_PIN_V() { return 5; }
   _pinFresh(date, pin) { return date === this.todayKey() && !!pin && pin.v === this.COACH_PIN_V; }
   _refreshCoachPin() {
     try {
@@ -6846,11 +6879,15 @@ class Component extends DCLogic {
       nextType = 'workout';
       const kind = this._qualityMix(wkStart)[Math.min(qualDoneCount, 1)];
       nextKm = kind === 'speed' ? Math.min(Math.max(base * 0.20, 6), 11) : Math.min(Math.max(base * 0.28, 8), 16);
-      const W = kind === 'speed' ? this._speedWorkout(this._phaseKey(mp), base, this.trainingPaces()) : this._qualityWorkout(this._phaseKey(mp), base, this.trainingPaces());
+      const tpQ = this.trainingPaces();
+      const W = kind === 'speed' ? this._speedWorkout(this._phaseKey(mp), base, tpQ) : this._qualityWorkout(this._phaseKey(mp), base, tpQ, nextKm);
+      const wrap = this._sessionWrap(W, nextKm, tpQ);
       const readyTag = ready != null ? ` (${ready}/100)` : '';
       headline = `Green light — ${W.name.toLowerCase()}${readyTag}`;
       const openLine = ready != null ? `Recovery is strong${readyPart ? ' (' + readyPart + ')' : ''} and your load has room` : `Your load has room and you're well spaced from your last hard day`;
-      body = `${openLine} — a day to earn some speed. Session: ${W.name}. Warm up 10–15 min easy, then ${W.sets} (${W.pace}), then 10 min easy cool-down (~${r1(mi(nextKm))} mi total). ${W.cue}`;
+      body = wrap
+        ? `${openLine} — a day to earn some speed. Session: ${W.name}. Warm up ${wrap.wu} min easy, then ${W.sets} (${W.pace}), then ${wrap.cd} min easy ${wrap.cd > 20 ? 'to finish the distance' : 'cool-down'} (~${r1(mi(nextKm))} mi, about ${wrap.totalMin} min total). ${W.cue}`
+        : `${openLine} — a day to earn some speed. Session: ${W.name}. Warm up 10–15 min easy, then ${W.sets} (${W.pace}), then 10 min easy cool-down (~${r1(mi(nextKm))} mi total). ${W.cue}`;
       push = ['push ok', 'var(--accent)'];
     } else if (midReady && !hadQuality) {
       nextType = 'easy'; nextKm = Math.max(6, Math.min(remainKm || base * 0.22, base * 0.24));
@@ -7024,8 +7061,8 @@ class Component extends DCLogic {
       const mix = this._qualityMix(this._startOfWeek(new Date()));
       for (let i = 0; i < nQual; i++) {
         const kind = mix[i];
-        const W = kind === 'speed' ? this._speedWorkout(phaseK, base, tp) : this._qualityWorkout(phaseK, base, tp);
         const km = kind === 'speed' ? Math.max(6, Math.min(11, base * 0.20)) : Math.max(8, Math.min(14, base * 0.26));
+        const W = kind === 'speed' ? this._speedWorkout(phaseK, base, tp) : this._qualityWorkout(phaseK, base, tp, km);
         sess.push({ kind: 'quality', km, note: `${W.name} · ${W.sets}`, pace: W.pace });
       }
       const easyDays = Math.max(1, rpw - 1 - nQual);
