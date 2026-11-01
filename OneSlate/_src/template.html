@@ -4448,11 +4448,19 @@ class Component extends DCLogic {
     // ----- Recovery (0–100), derived -----
     let recovery = null, recoveryParts = [];
     if (sleep) {
-      const s = sleep.score != null ? sleep.score : (baseScore || 70);
+      const s0 = sleep.score != null ? sleep.score : (baseScore || 70);
+      // One big night shouldn't erase the nights before it: blend today's score with the last 3 nights'
+      // average (today still counts most). A 10h catch-up after two ~3.5h nights is partial recovery, not full.
+      const last3 = hist.slice(-3).map(x => x && x.score).filter(n => typeof n === 'number');
+      const s = last3.length >= 2 ? 0.6 * s0 + 0.4 * (last3.reduce((a, b) => a + b, 0) / last3.length) : s0;
       let r = s; // start from sleep score
       if (sleep.hrv != null && baseHrv) { const d = (sleep.hrv - baseHrv) / baseHrv; r += Math.max(-12, Math.min(12, d * 60)); recoveryParts.push({ k: 'HRV', good: d >= -0.05, txt: d >= 0 ? `${Math.round(d * 100)}% above baseline` : `${Math.round(-d * 100)}% below baseline` }); }
-      if (sleep.resting_hr != null && baseRhr) { const d = (sleep.resting_hr - baseRhr) / baseRhr; r -= Math.max(-10, Math.min(10, d * 80)); recoveryParts.push({ k: 'Resting HR', good: d <= 0.05, txt: d <= 0 ? `${Math.round(-d * 100)}% below baseline` : `${Math.round(d * 100)}% above baseline` }); }
-      if (sleep.duration_min != null && baseDur) { const d = (sleep.duration_min - baseDur) / baseDur; r += Math.max(-8, Math.min(6, d * 40)); }
+      let rhrElevated = false;
+      if (sleep.resting_hr != null && baseRhr) { const d = (sleep.resting_hr - baseRhr) / baseRhr; rhrElevated = d > 0.05; r -= Math.max(-10, Math.min(10, d * 80)); recoveryParts.push({ k: 'Resting HR', good: d <= 0.05, txt: d <= 0 ? `${Math.round(-d * 100)}% below baseline` : `${Math.round(d * 100)}% above baseline` }); }
+      // sleep past ~9h isn't extra credit (and a 10h+ night with ~0 awake time is often merged/inflated data)
+      if (sleep.duration_min != null && baseDur) { const d = (Math.min(sleep.duration_min, 540) - baseDur) / baseDur; r += Math.max(-8, Math.min(6, d * 40)); }
+      // Resting HR running >5% above baseline is a fatigue/illness flag that sleep can't cancel out: never "push".
+      if (rhrElevated) r = Math.min(r, 79);
       recovery = Math.max(1, Math.min(100, Math.round(r)));
     }
 
@@ -6729,7 +6737,7 @@ class Component extends DCLogic {
   // logged run, or a feel check-in — never on the clock or the weather alone. ----
   // bump when the coach's decision logic changes, so a pin made by older logic today is recomputed
   // instead of being served (or adopted from another device) for the rest of the day
-  get COACH_PIN_V() { return 5; }
+  get COACH_PIN_V() { return 6; }
   _pinFresh(date, pin) { return date === this.todayKey() && !!pin && pin.v === this.COACH_PIN_V; }
   _refreshCoachPin() {
     try {
