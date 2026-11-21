@@ -6737,7 +6737,7 @@ class Component extends DCLogic {
   // logged run, or a feel check-in — never on the clock or the weather alone. ----
   // bump when the coach's decision logic changes, so a pin made by older logic today is recomputed
   // instead of being served (or adopted from another device) for the rest of the day
-  get COACH_PIN_V() { return 6; }
+  get COACH_PIN_V() { return 7; }
   _pinFresh(date, pin) { return date === this.todayKey() && !!pin && pin.v === this.COACH_PIN_V; }
   _refreshCoachPin() {
     try {
@@ -6821,6 +6821,31 @@ class Component extends DCLogic {
     const midReady = ready != null && ready >= 45 && ready < 62;
     const highReady = ready != null && ready >= 80;
 
+    // ---- long-run timing: decided by spacing, recovery and what's left in the week, not run order ----
+    // The long run is the week's anchor, but it should land when you're fresh and well spaced from the
+    // last long/hard day — never just because it's "run #2". Quality goes first when there's room, so it
+    // sits ≥48h ahead of the long run instead of crammed into the legs it leaves behind.
+    const dayIdx = d => { const x = new Date(d); x.setHours(0, 0, 0, 0); return Math.round(x.getTime() / 864e5); };
+    const todayIdx = dayIdx(new Date());
+    const isLongRun = r => r.type === 'long' || r.type === 'race' || (r.distance_km || 0) >= longThreshKm;
+    const isHardRun = r => isLongRun(r) || r.type === 'workout';
+    const lastOf = pred => s.runs.reduce((m, r) => (pred(r) && (!m || r._d > m._d)) ? r : m, null);
+    const lastLongR = lastOf(isLongRun), lastHardR = lastOf(isHardRun);
+    const daysSinceLong = lastLongR ? todayIdx - dayIdx(lastLongR._d) : 99;
+    const daysSinceHard = lastHardR ? todayIdx - dayIdx(lastHardR._d) : 99;
+    const daysLeftWk = 7 - ((new Date().getDay() + 6) % 7);            // incl. today: Mon=7 … Sun=1
+    const runsLeftWk = Math.max(1, Math.min(daysLeftWk, rpwBC - thisWk.length));
+    const longUrgent = !hadLong && (runsLeftWk <= 1 || daysLeftWk <= 2); // last real chance this week
+    const longSpaced = daysSinceLong >= (longUrgent ? 4 : 5);            // ~a week between long runs
+    const hardSpaced = daysSinceHard >= 2;                               // 48h clear of any hard day
+    const qualityGate = !deloadWeek && !hadQuality && ((highReady && s.acwr < 1.3) || (ready == null && s.acwr < 1.2 && (s.runsPerWk || 0) >= 4 && base >= 26 && ((mp && mp.weeksToRace != null) || this.state.running.settings.mode === 'rampup' || base >= 40)));
+    // quality first when the week still has room for quality → easy → long
+    const qualityFirst = qualityGate && !longUrgent && runsLeftWk >= 3 && daysLeftWk >= 3;
+    const longWindow = !hadLong && longSpaced && hardSpaced && remainKm > base * 0.25 && (ready == null || ready >= 55);
+    const longNow = longWindow && (longUrgent || !qualityFirst);
+    // don't spend the day before an owed long run on a hard session
+    const protectLong = !hadLong && !longNow && daysLeftWk <= 2;
+
     // ---- pick the next run: readiness-gated, progression-driven ----
     let headline, body, nextKm, nextType, push;
 
@@ -6873,17 +6898,17 @@ class Component extends DCLogic {
       headline = 'Recovery day';
       body = `Yesterday was a ${s.lastRun.type === 'long' ? 'long run' : 'harder session'}. Follow it with an easy, conversational run (or rest) so the adaptation sticks. Save intensity for 48h out.`;
       push = ['recover', 'var(--fg-2)'];
-    } else if (longToday || (!hadLong && remainKm > base * 0.25 && (ready == null || ready >= 55))) {
+    } else if (longToday || longNow) {
       nextType = 'long';
       nextKm = this._longTargetKm(s, base, mp, deloadWeek);
       const stepFromLast = !deloadWeek && s.longestRecentKm && nextKm > s.longestRecentKm + 0.3;
       headline = deloadWeek ? 'Down week — easy long run' : 'Long run — build the engine';
       body = deloadWeek
         ? `Planned recovery week — go ${r1(mi(nextKm))} mi at an easy, relaxed effort. This is where the last few weeks of building actually lock in; don't chase distance or pace today.`
-        : `No long run yet this week. Go ${r1(mi(nextKm))} mi easy and conversational${stepFromLast ? ` — about a mile past your recent longest (${r1(mi(s.longestRecentKm))} mi), a safe step up` : ''}. Long runs grow the aerobic base that makes every other pace feel easier; keep it relaxed and this is the backbone of your progression.`;
+        : `${daysSinceLong >= 99 ? 'No recent long run on record' : `${daysSinceLong} days since your last long run`}, you're ${daysSinceHard >= 99 ? 'fresh' : `${daysSinceHard} days clear of hard efforts`}${longUrgent ? ' and the week is running out' : ''}, so today's the day. Go ${r1(mi(nextKm))} mi easy and conversational${stepFromLast ? ` — about a mile past your recent longest (${r1(mi(s.longestRecentKm))} mi), a safe step up` : ''}. Long runs grow the aerobic base that makes every other pace feel easier; keep it relaxed and this is the backbone of your progression.`;
       if (!deloadWeek && this._phaseKey(mp) === 'sharpen') { const F = this._mpFinish(mi(nextKm), this.trainingPaces()); body += ` You're sharpening for the marathon, so make this a marathon-pace long run: ${F.note}.`; }
       push = deloadWeek ? ['deload', '#c9b87e'] : ['build', 'var(--accent)'];
-    } else if (!deloadWeek && !hadQuality && ((highReady && s.acwr < 1.3) || (ready == null && s.acwr < 1.2 && (s.runsPerWk || 0) >= 4 && base >= 26 && ((mp && mp.weeksToRace != null) || this.state.running.settings.mode === 'rampup' || base >= 40)))) {
+    } else if (qualityGate && hardSpaced && !protectLong) {
       nextType = 'workout';
       const kind = this._qualityMix(wkStart)[Math.min(qualDoneCount, 1)];
       nextKm = kind === 'speed' ? Math.min(Math.max(base * 0.20, 6), 11) : Math.min(Math.max(base * 0.28, 8), 16);
