@@ -4518,6 +4518,7 @@ class Component extends DCLogic {
     if (!text || this.state.chatBusy) return;
     const userMsg = { role: 'user', text };
     const msgs = [...this.state.healthChat, userMsg];
+    this._chatStarted = Date.now();
     this.setState({ healthChat: msgs, chatDraft: '', chatBusy: true }, () => this._saveChat());
     const { ctx, rc } = this.buildCoachContext(text);
     // "recap my week" style questions get the structured weekly recap prompt
@@ -4534,16 +4535,33 @@ class Component extends DCLogic {
   // One place that talks to the health-chat edge function. mode: chat | brief | recap | raw
   async callCoach(mode, messages, context) {
     if (!this._sb || !this.state.user) throw new Error('sign in to use the coach');
-    const { data } = await this._sb.auth.getSession();
-    const token = data && data.session && data.session.access_token;
-    const res = await fetch(`${this.SB_URL}/functions/v1/health-chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token, 'apikey': this.SB_KEY },
-      // error turns aren't real coach replies, don't feed them back to the model
-      body: JSON.stringify({ mode, messages: (messages || []).filter(m => !m.err).map(m => ({ role: m.role, text: m.text })), context: context || {} }),
-    });
+    // supabase-js getSession() can stall (auth lock held by a stuck token refresh, app
+    // backgrounded mid-refresh). Never let that freeze the coach: give it 4s, then fall
+    // back to the token it stored in localStorage.
+    let token = null;
+    try {
+      const r = await Promise.race([this._sb.auth.getSession(), new Promise(res => setTimeout(() => res(null), 4000))]);
+      token = r && r.data && r.data.session && r.data.session.access_token;
+    } catch (e) {}
+    if (!token) {
+      try { const k = Object.keys(localStorage).find(k => /^sb-.*-auth-token$/.test(k)); const v = k && JSON.parse(localStorage.getItem(k)); token = v && (v.access_token || (v.currentSession && v.currentSession.access_token)); } catch (e) {}
+    }
+    if (!token) throw new Error('sign in again to use the coach');
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 75000);
+    let res;
+    try {
+      res = await fetch(`${this.SB_URL}/functions/v1/health-chat`, {
+        method: 'POST', signal: ctl.signal,
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token, 'apikey': this.SB_KEY },
+        // error turns aren't real coach replies, don't feed them back to the model
+        body: JSON.stringify({ mode, messages: (messages || []).filter(m => !m.err).map(m => ({ role: m.role, text: m.text })), context: context || {} }),
+      });
+    } catch (e) {
+      throw new Error(e && e.name === 'AbortError' ? 'coach took too long to answer, try again' : 'couldn\u2019t reach the coach, check your connection');
+    } finally { clearTimeout(timer); }
     const j = await res.json().catch(() => ({}));
-    if (!res.ok || !j.reply) throw new Error(j.error || 'Something went wrong, try again.');
+    if (!res.ok || !j.reply) throw new Error(j.error || `coach error (${res.status}), try again`);
     return j.reply;
   }
 
@@ -8053,7 +8071,12 @@ class Component extends DCLogic {
     try { const mo = localStorage.getItem('oneslate:merchantOverrides'); if (mo) this.setState({ merchantOverrides: JSON.parse(mo) }); } catch (e) {}
     try { const ch = JSON.parse(localStorage.getItem('oneslate:chat') || 'null'); if (Array.isArray(ch) && ch.length) this.setState({ healthChat: ch }); } catch (e) {}
     this.initCloud();
-    this._onFocus = () => { this.fetchSleep(); this.fetchNutrition(); this.fetchRunning(); this.maybeDailyBrief(); };
+    this._onFocus = () => {
+      this.fetchSleep(); this.fetchNutrition(); this.fetchRunning(); this.maybeDailyBrief();
+      if (this.state.chatBusy && this._chatStarted && Date.now() - this._chatStarted > 90000) {
+        this.setState(s => ({ chatBusy: false, healthChat: [...s.healthChat, { role: 'assistant', text: 'that one got lost while the app was in the background, ask again', err: true }] }));
+      }
+    };
     window.addEventListener('focus', this._onFocus);
     // WKWebView doesn't fire window focus when you switch tabs in the native app; these do.
     this._onVisible = () => { if (document.visibilityState === 'visible') this._onFocus(); };

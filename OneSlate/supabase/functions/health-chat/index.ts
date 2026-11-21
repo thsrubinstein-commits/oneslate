@@ -105,6 +105,9 @@ function clean(s: string) {
 
 async function callGemini(apiKey: string, system: string, contents: any[], mode: string) {
   let lastErr = "coach request failed";
+  // Whole answer must land well inside the edge function's time limit, so a slow or stuck
+  // model can't hang the request: each try gets at most 30s and the total is capped at 70s.
+  const deadline = Date.now() + 70_000;
   for (const model of MODELS) {
     for (const withThinking of [true, false]) {
       const generationConfig: any = {
@@ -112,16 +115,27 @@ async function callGemini(apiKey: string, system: string, contents: any[], mode:
         // Thinking tokens count toward this, so leave room or answers get cut off mid-sentence.
         maxOutputTokens: mode === "brief" ? 1024 : mode === "raw" ? 8192 : 4096,
       };
-      if (withThinking) generationConfig.thinkingConfig = { thinkingLevel: mode === "chat" || mode === "recap" ? "medium" : "low" };
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-          body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents, generationConfig }),
-        },
-      );
-      const j = await res.json().catch(() => ({}));
+      if (withThinking) generationConfig.thinkingConfig = { thinkingLevel: "low" };
+      const left = deadline - Date.now();
+      if (left < 3000) throw new Error("coach took too long to answer, try again");
+      let res: Response;
+      try {
+        res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+          {
+            method: "POST",
+            signal: AbortSignal.timeout(Math.min(30_000, left)),
+            headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+            body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents, generationConfig }),
+          },
+        );
+      } catch (e) {
+        lastErr = `${model} timed out`;
+        console.log("gemini", model, "timeout/network", String(e));
+        break; // next model
+      }
+      const j: any = await res.json().catch(() => ({}));
+      console.log("gemini", model, withThinking ? "thinking" : "plain", res.status, res.ok ? "" : (j?.error?.message || "").slice(0, 200));
       if (res.ok) {
         const parts = j?.candidates?.[0]?.content?.parts || [];
         const text = parts.filter((p: any) => !p.thought).map((p: any) => p.text || "").join("");
