@@ -1652,6 +1652,12 @@ button, input, textarea, select, [role="button"] {
                 <span style="font-size:14px; color:var(--fg-3); padding-bottom:8px;">/ 100</span>
               </div>
               <div style="font-size:13px; color:var(--fg-2); line-height:1.6;">{{ hCoachHeadline }}</div>
+              <sc-if value="{{ hasCoachBrief }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex; gap:8px; padding:10px 12px; background:var(--well); border:1px solid var(--line); border-radius:6px;">
+                  <span style="flex:none; color:var(--accent); font-size:12px; line-height:1.6;">✦</span>
+                  <span style="font-size:13px; color:var(--fg-1); line-height:1.6;">{{ coachBrief }}</span>
+                </div>
+              </sc-if>
             </div>
             <!-- supporting metrics -->
             <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px,1fr)); gap:12px;">
@@ -1948,8 +1954,9 @@ button, input, textarea, select, [role="button"] {
               <div style="display:flex; align-items:center; gap:8px; padding:12px 15px; border-bottom:1px solid var(--line);">
                 <span style="color:var(--accent); font-size:12px;">✦</span>
                 <span style="font-size:11px; font-weight:600; letter-spacing:0.12em; text-transform:uppercase; color:var(--fg-2);">Ask the coach</span>
+                <sc-if value="{{ chatHasMsgs }}" hint-placeholder-val="{{ false }}"><button data-nodrag="1" onclick="{{ onChatClear }}" title="clear chat" style="margin-left:auto; height:22px; padding:0 9px; background:transparent; border:1px solid var(--line-hard); border-radius:11px; color:var(--fg-3); font-size:10px; letter-spacing:0.06em; text-transform:uppercase; cursor:pointer;" style-hover="color:var(--fg-1);">clear</button></sc-if>
               </div>
-              <div style="display:flex; flex-direction:column; gap:10px; padding:15px; max-height:340px; overflow-y:auto;">
+              <div data-chat-scroll="1" style="display:flex; flex-direction:column; gap:10px; padding:15px; max-height:420px; overflow-y:auto;">
                 <sc-if value="{{ chatEmpty }}" hint-placeholder-val="{{ true }}">
                   <div style="display:flex; flex-direction:column; gap:8px; padding:6px 2px;">
                     <span style="font-size:12px; color:var(--fg-3); line-height:1.6;">Ask me anything about your recovery, sleep, nutrition, training, or goals. I see your latest numbers across all of it — and if a question's vague, I'll ask a quick follow-up rather than guess.</span>
@@ -2349,8 +2356,9 @@ button, input, textarea, select, [role="button"] {
               <div style="display:flex; align-items:center; gap:8px; padding:12px 15px; border-bottom:1px solid var(--line);">
                 <span style="color:var(--accent); font-size:12px;">✦</span>
                 <span style="font-size:11px; font-weight:600; letter-spacing:0.12em; text-transform:uppercase; color:var(--fg-2);">Ask the coach · adjust the plan</span>
+                <sc-if value="{{ chatHasMsgs }}" hint-placeholder-val="{{ false }}"><button data-nodrag="1" onclick="{{ onChatClear }}" title="clear chat" style="margin-left:auto; height:22px; padding:0 9px; background:transparent; border:1px solid var(--line-hard); border-radius:11px; color:var(--fg-3); font-size:10px; letter-spacing:0.06em; text-transform:uppercase; cursor:pointer;" style-hover="color:var(--fg-1);">clear</button></sc-if>
               </div>
-              <div style="display:flex; flex-direction:column; gap:10px; padding:15px; max-height:340px; overflow-y:auto;">
+              <div data-chat-scroll="1" style="display:flex; flex-direction:column; gap:10px; padding:15px; max-height:420px; overflow-y:auto;">
                 <sc-if value="{{ chatEmpty }}" hint-placeholder-val="{{ true }}">
                   <div style="display:flex; flex-direction:column; gap:8px; padding:6px 2px;">
                     <span style="font-size:12px; color:var(--fg-3); line-height:1.6;">Tell me how a run actually went — if your heart rate ran higher than it should have, a run felt harder than the pace called for, or you need to move the week around — and I'll adjust your next workout to keep you building toward the marathon. I read your recent runs, target paces, HR and recovery.</span>
@@ -3863,6 +3871,8 @@ class Component extends DCLogic {
       cwBbBusy: false,
       cwFlash: '',
       healthChat: [],              // [{role:'user'|'assistant', text}]
+      coachBrief: '',              // today's AI readiness note (cached per day)
+      coachBriefKey: '',
       chatDraft: '',
       chatBusy: false,
       // ---- views: 'board' | 'cabinet' | 'settings' ----
@@ -4143,7 +4153,7 @@ class Component extends DCLogic {
           // open the app. Re-pin only when the row actually changed, not on every poll/focus refetch.
           const prev = this.state.sleep;
           const changed = !prev || prev.date !== row.date || prev.updated_at !== row.updated_at;
-          this.setState({ sleep: row, sleepHistory: hist, sleepSyncedAt: Date.now() }, () => { if (changed) this._refreshCoachPin(); });
+          this.setState({ sleep: row, sleepHistory: hist, sleepSyncedAt: Date.now() }, () => { if (changed) this._refreshCoachPin(); this.maybeDailyBrief(); });
           try { localStorage.setItem('oneslate:sleep', JSON.stringify({ row, hist, at: Date.now() })); } catch (e) {}
           return;
         }
@@ -4501,8 +4511,120 @@ class Component extends DCLogic {
     if (!text || this.state.chatBusy) return;
     const userMsg = { role: 'user', text };
     const msgs = [...this.state.healthChat, userMsg];
-    this.setState({ healthChat: msgs, chatDraft: '', chatBusy: true });
-    // build grounded context from the user's real derived data
+    this.setState({ healthChat: msgs, chatDraft: '', chatBusy: true }, () => this._saveChat());
+    const { ctx, rc } = this.buildCoachContext(text);
+    // "recap my week" style questions get the structured weekly recap prompt
+    const mode = /\b(recap|review|summar\w*)\b.*\bweek\b|\bweek(ly)? (recap|review|summary)\b/i.test(text) ? 'recap' : 'chat';
+    try {
+      const reply = await this.callCoach(mode, msgs, ctx);
+      const cite = (rc.cited && rc.cited.length) ? 'Based on: ' + rc.cited.join('  ·  ') : '';
+      this.setState(s => ({ healthChat: [...s.healthChat, { role: 'assistant', text: reply, cite }], chatBusy: false }), () => this._saveChat());
+    } catch (e) {
+      this.setState(s => ({ healthChat: [...s.healthChat, { role: 'assistant', text: (e && e.message) || 'Coach is unavailable right now.', err: true }], chatBusy: false }), () => this._saveChat());
+    }
+  }
+
+  // One place that talks to the health-chat edge function. mode: chat | brief | recap | raw
+  async callCoach(mode, messages, context) {
+    if (!this._sb || !this.state.user) throw new Error('sign in to use the coach');
+    const { data } = await this._sb.auth.getSession();
+    const token = data && data.session && data.session.access_token;
+    const res = await fetch(`${this.SB_URL}/functions/v1/health-chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token, 'apikey': this.SB_KEY },
+      // error turns aren't real coach replies, don't feed them back to the model
+      body: JSON.stringify({ mode, messages: (messages || []).filter(m => !m.err).map(m => ({ role: m.role, text: m.text })), context: context || {} }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || !j.reply) throw new Error(j.error || 'Something went wrong, try again.');
+    return j.reply;
+  }
+
+  // Works in Claude Design preview (window.claude) AND on the deployed site (edge function).
+  aiComplete(prompt) {
+    if (window.claude && typeof window.claude.complete === 'function') return window.claude.complete(prompt);
+    return this.callCoach('raw', [{ role: 'user', text: prompt }], {});
+  }
+
+  _saveChat() {
+    // keep the newest message in view
+    setTimeout(() => { try { document.querySelectorAll('[data-chat-scroll]').forEach(el => { el.scrollTop = el.scrollHeight; }); } catch (e) {} }, 30);
+    try { localStorage.setItem('oneslate:chat', JSON.stringify((this.state.healthChat || []).filter(m => !m.err).slice(-30))); } catch (e) {}
+  }
+  clearChat() { this.setState({ healthChat: [] }, () => this._saveChat()); }
+
+  // Past-7-days rollup for the weekly recap (and general "how's my week" questions).
+  coachWeek() {
+    const out = {};
+    const cutoff = Date.now() - 7 * 864e5;
+    const avg = (rows, k) => { const v = rows.map(r => r[k]).filter(x => typeof x === 'number'); return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : null; };
+    try {
+      const hist = (this.state.sleepHistory || []).filter(r => r && r.date && new Date(r.date + 'T12:00:00').getTime() >= cutoff);
+      if (hist.length) out.sleep = { nights: hist.length, avgScore: avg(hist, 'score'), avgDurationMin: avg(hist, 'duration_min'), avgHrv: avg(hist, 'hrv'), avgRestingHr: avg(hist, 'resting_hr') };
+    } catch (e) {}
+    try {
+      const rs = this.runStats();
+      const wk = (rs.runs || []).filter(r => r._d && r._d.getTime() >= cutoff);
+      if (wk.length) out.running = {
+        runs: wk.length, miles: +this.kmToMi(wk.reduce((a, r) => a + (r.distance_km || 0), 0)).toFixed(1),
+        longestMiles: +this.kmToMi(Math.max(...wk.map(r => r.distance_km || 0))).toFixed(1),
+        types: wk.reduce((m, r) => { const t = r.type || 'run'; m[t] = (m[t] || 0) + 1; return m; }, {}),
+        milesLastCalendarWeek: rs.lastWeekKm != null ? +this.kmToMi(rs.lastWeekKm).toFixed(1) : null,
+      };
+    } catch (e) {}
+    try {
+      const NU = this.deriveNutrition();
+      if (NU.daysLogged > 0) out.nutrition = { daysLogged: NU.daysLogged, weeklyAvg: NU.avg, targets: NU.targets };
+    } catch (e) {}
+    try {
+      const h = this.coachHabits();
+      if (h.length) out.habits = h;
+    } catch (e) {}
+    try {
+      const wk = this.computeThisWeek();
+      out.deadlinesNext7d = (wk.deadlines || []).map(d => ({ text: d.text, when: d.rel }));
+    } catch (e) {}
+    return out;
+  }
+
+  // Habit cards (any checklist titled habit/streak) with today's done/open items.
+  coachHabits() {
+    const out = [];
+    (this.state.cards || []).forEach(c => {
+      if (!/habit|streak/i.test(c.title || '') || !Array.isArray(c.items)) return;
+      const items = c.items.filter(it => (it.text || '').trim());
+      if (!items.length) return;
+      out.push({ card: c.title, done: items.filter(it => it.done).map(it => it.text.trim()), open: items.filter(it => !it.done).map(it => it.text.trim()) });
+    });
+    return out;
+  }
+
+  // AI readiness note for the top of the dashboard. One call per day (per new night of
+  // sleep), cached so reopening the app doesn't spend free quota.
+  maybeDailyBrief() {
+    if (!this._sb || !this.state.user || !this.state.sleep) return;
+    const key = this.todayKey() + '|' + (this.state.sleep.date || '');
+    if (this.state.coachBriefKey === key || this._briefInFlight === key) return;
+    try {
+      const c = JSON.parse(localStorage.getItem('oneslate:brief') || 'null');
+      if (c && c.key === key && c.text) { this.setState({ coachBrief: c.text, coachBriefKey: key }); return; }
+    } catch (e) {}
+    this._briefInFlight = key;
+    clearTimeout(this._briefT);
+    // give runs/weather a moment to load so the note sees the full picture
+    this._briefT = setTimeout(async () => {
+      try {
+        const { ctx } = this.buildCoachContext('');
+        const text = await this.callCoach('brief', [], ctx);
+        this.setState({ coachBrief: text, coachBriefKey: key });
+        try { localStorage.setItem('oneslate:brief', JSON.stringify({ key, text })); } catch (e) {}
+      } catch (e) { /* the rule-based headline still shows */ }
+      this._briefInFlight = null;
+    }, 3500);
+  }
+
+  // Grounded context from the user's real derived data. Returns { ctx, rc }.
+  buildCoachContext(text) {
     const rc = this.runsForContext(text);
     const h = this.deriveHealth();
     const ctx = {
@@ -4630,22 +4752,14 @@ class Component extends DCLogic {
       never_first_run_back_hard: 'Never prescribe a long run or hard session as the first run back from time off.',
       note: 'Practical coaching grounded in their real numbers \u2014 not medical advice.',
     };
+    // today's date/time so "today", "tomorrow", "this weekend" mean something to the model
     try {
-      if (!this._sb || !this.state.user) throw new Error('sign in to use the coach');
-      const { data } = await this._sb.auth.getSession();
-      const token = data && data.session && data.session.access_token;
-      const res = await fetch(`${this.SB_URL}/functions/v1/health-chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-        body: JSON.stringify({ messages: msgs, context: ctx }),
-      });
-      const j = await res.json().catch(() => ({}));
-      const reply = j.reply || (j.error ? `(${j.error})` : 'Something went wrong — try again.');
-      const cite = (rc.cited && rc.cited.length) ? 'Based on: ' + rc.cited.join('  ·  ') : '';
-      this.setState(s => ({ healthChat: [...s.healthChat, { role: 'assistant', text: reply, cite }], chatBusy: false }));
-    } catch (e) {
-      this.setState(s => ({ healthChat: [...s.healthChat, { role: 'assistant', text: (e && e.message) || 'Coach is unavailable right now.' }], chatBusy: false }));
-    }
+      const now = new Date();
+      ctx.today = { date: this.todayKey(), weekday: now.toLocaleDateString('en-US', { weekday: 'long' }), localTime: now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) };
+    } catch (e) {}
+    try { const hb = this.coachHabits(); if (hb.length) ctx.habitsToday = hb; } catch (e) {}
+    try { ctx.week = this.coachWeek(); } catch (e) {}
+    return { ctx, rc };
   }
 
   healthCoach() {
@@ -5045,11 +5159,11 @@ class Component extends DCLogic {
     const parsed = this.nlpEvent(text);
     this.setState({ calParsed: parsed });
     try {
-      if (window.claude && typeof window.claude.complete === 'function') {
+      if ((window.claude && typeof window.claude.complete === 'function') || (this._sb && this.state.user)) {
         this.setState({ calBusy: true });
         const W = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
         const prompt = 'Convert this personal calendar request into JSON. Today is ' + this.todayKey() + ' (' + W[new Date().getDay()] + '). Reply with ONLY a JSON object: {"title":string,"date":"YYYY-MM-DD","time":"HH:MM" 24h or null,"durationMin":number or null,"notes":string or null}. Request: ' + JSON.stringify(text);
-        window.claude.complete(prompt).then(res => {
+        this.aiComplete(prompt).then(res => {
           let obj = null; try { const mch = String(res).match(/\{[\s\S]*\}/); if (mch) obj = JSON.parse(mch[0]); } catch (e) {}
           if (obj && obj.date && /^\d{4}-\d{2}-\d{2}$/.test(obj.date)) {
             this.setState(s => s.calParsed ? ({ calBusy: false, calParsed: { ...s.calParsed, title: obj.title || s.calParsed.title, date: obj.date, time: (obj.time && /^\d{1,2}:\d{2}$/.test(obj.time)) ? obj.time : s.calParsed.time, durationMin: (typeof obj.durationMin === 'number') ? obj.durationMin : s.calParsed.durationMin, notes: obj.notes != null ? obj.notes : s.calParsed.notes, confidence: 'high', ai: true } }) : ({ calBusy: false }));
@@ -5376,7 +5490,7 @@ class Component extends DCLogic {
   cwParseSyllabus() {
     const text = (this.state.cwSyllabusText || '').trim(); if (!text) return;
     const cls = (this.state.classes || []).find(c => c.id === this.state.cwSyllabusClassId);
-    const canAI = !!(window.claude && typeof window.claude.complete === 'function');
+    const canAI = !!((window.claude && typeof window.claude.complete === 'function') || (this._sb && this.state.user));
     const seed = this.cwHeuristicSyllabus(text).map(x => ({ ...x, include: true }));
     const guessedName = cls ? '' : this.cwGuessClassName(text);
     const guessedInstructor = cls ? '' : this.cwGuessInstructor(text);
@@ -5385,7 +5499,7 @@ class Component extends DCLogic {
     try {
       const term = cls && cls.termStart ? (' The term runs ' + cls.termStart + ' to ' + (cls.termEnd || 'the end of the semester') + '.') : '';
       const prompt = 'Extract every graded item, deadline, AND required reading from this course syllabus — not just graded work. Today is ' + this.todayKey() + '.' + term + ' Reply with ONLY a JSON array; each element {"title":string,"type":"assignment"|"quiz"|"test"|"reading"|"project","due":"YYYY-MM-DD","points":number or null,"confidence":"high"|"low"}. Include readings even when ungraded — syllabi often list them under a class date or week heading with no explicit "due" date; in that case use the date of the class session (or the start of the week) they belong to as "due" and mark "confidence":"low". Resolve relative dates like "Week 3" or "Session 5" from the term start and a weekly cadence. If a date is genuinely unknown, still include the item with your best guess and "confidence":"low". One row per reading/assignment — don\'t merge multiple distinct readings from the same day into one row. Syllabus:\n' + text;
-      window.claude.complete(prompt).then(res => {
+      this.aiComplete(prompt).then(res => {
         let arr = null; try { const mch = String(res).match(/\[[\s\S]*\]/); if (mch) arr = JSON.parse(mch[0]); } catch (e) {}
         if (Array.isArray(arr) && arr.length) {
           const ok = ['assignment', 'quiz', 'test', 'reading', 'project'];
@@ -7930,8 +8044,9 @@ class Component extends DCLogic {
     }, 1000);
     if (!this._restored) this.loadWeather();
     try { const mo = localStorage.getItem('oneslate:merchantOverrides'); if (mo) this.setState({ merchantOverrides: JSON.parse(mo) }); } catch (e) {}
+    try { const ch = JSON.parse(localStorage.getItem('oneslate:chat') || 'null'); if (Array.isArray(ch) && ch.length) this.setState({ healthChat: ch }); } catch (e) {}
     this.initCloud();
-    this._onFocus = () => { this.fetchSleep(); this.fetchNutrition(); this.fetchRunning(); };
+    this._onFocus = () => { this.fetchSleep(); this.fetchNutrition(); this.fetchRunning(); this.maybeDailyBrief(); };
     window.addEventListener('focus', this._onFocus);
     // WKWebView doesn't fire window focus when you switch tabs in the native app; these do.
     this._onVisible = () => { if (document.visibilityState === 'visible') this._onFocus(); };
@@ -8782,16 +8897,8 @@ class Component extends DCLogic {
     if (!series.length) { this.setState({ dcInsight: 'Pick one or more metrics that have data in this range, then try again.' }); return; }
     this.setState({ dcInsightBusy: true, dcInsight: '' });
     try {
-      if (!this._sb || !this.state.user) throw new Error('sign in to generate insights');
-      const { data } = await this._sb.auth.getSession();
-      const token = data && data.session && data.session.access_token;
-      const res = await fetch(`${this.SB_URL}/functions/v1/health-chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token, 'apikey': this.SB_KEY },
-        body: JSON.stringify({ messages: [{ role: 'user', text: `These are my ${this.state.dcRange || '30d'} trends. Give 2-3 short, specific insights: what's improving, what's worsening, and one thing worth acting on. Reference the numbers and be concise.` }], context: { dataCenter: { range: this.state.dcRange || '30d', series } } }),
-      });
-      const j = await res.json().catch(() => ({}));
-      this.setState({ dcInsight: j.reply || (j.error ? `(${j.error})` : 'Could not generate insights — try again.'), dcInsightBusy: false });
+      const reply = await this.callCoach('chat', [{ role: 'user', text: `These are my ${this.state.dcRange || '30d'} trends. Give 2-3 short, specific insights: what's improving, what's worsening, and one thing worth acting on. Reference the numbers and be concise.` }], { dataCenter: { range: this.state.dcRange || '30d', series } });
+      this.setState({ dcInsight: reply, dcInsightBusy: false });
     } catch (e) {
       this.setState({ dcInsight: (e && e.message) || 'Insights are unavailable right now.', dcInsightBusy: false });
     }
@@ -8804,6 +8911,7 @@ class Component extends DCLogic {
       if (id === 'ai_coach') {
         let head = 'You’re on track — keep the plan.';
         try { const c = this.fitnessCoach(); if (c && c.headline) head = c.headline; } catch (e) {}
+        if (this.state.coachBrief) head = this.state.coachBrief;
         return { glyph: '✦', label: 'AI Coach', prose: true, text: head, openLabel: 'Open coach', open: () => this.setState({ view: 'health', healthTab: 'coach', showAdd: false, showLoc: false }, () => this.fetchSleep()) };
       }
       if (id === 'running') {
@@ -9709,6 +9817,8 @@ class Component extends DCLogic {
       lightLabel: hsleep.light_min ? `${Math.floor(hsleep.light_min/60)}h ${pad(hsleep.light_min%60)}m` : '—',
       hCoachHeadline: hcoach.headline,
       hCoachBody: hcoach.body,
+      coachBrief: this.state.coachBrief || '',
+      hasCoachBrief: !!this.state.coachBrief,
       fcHeadline: fcoach.headline,
       fcToday: fcoach.today,
       fcColor: fcoach.readyColor,
@@ -9722,12 +9832,14 @@ class Component extends DCLogic {
         cite: m.cite || '', hasCite: !!m.cite,
       })),
       chatEmpty: !(this.state.healthChat || []).length,
+      chatHasMsgs: !!(this.state.healthChat || []).length,
+      onChatClear: () => this.clearChat(),
       chatBusy: this.state.chatBusy,
       chatDraft: this.state.chatDraft,
-      chatSuggestions: ['How should I structure a hybrid week for hypertrophy?', 'Am I eating enough protein to build muscle?', 'Will my running hurt my strength gains?'].map(t => ({
+      chatSuggestions: ['What should I do today?', 'Recap my week', 'Am I eating enough protein to build muscle?', 'Will my running hurt my strength gains?'].map(t => ({
         text: t, onAsk: () => this.setState({ chatDraft: t }, () => this.sendHealthChat()),
       })),
-      runChatSuggestions: ['My HR was higher than it should’ve been on my last run — adjust my next workout', 'What should my next workout be to build toward the marathon?', 'That run felt way harder than the pace — what does that mean?'].map(t => ({
+      runChatSuggestions: ['Recap my week', 'My HR was higher than it should’ve been on my last run — adjust my next workout', 'What should my next workout be to build toward the marathon?', 'That run felt way harder than the pace — what does that mean?'].map(t => ({
         text: t, onAsk: () => this.setState({ chatDraft: t }, () => this.sendHealthChat()),
       })),
       onChatDraft: (e) => this.setState({ chatDraft: e.target.value }),

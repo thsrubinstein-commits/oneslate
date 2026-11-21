@@ -12,7 +12,9 @@ sync** — the one part that needs a few secrets only you can provide.
                                           index.html reads ───┘  shows on the front card
 ```
 
-- A GitHub Actions cron (`.github/workflows/garmin-sync.yml`) runs every morning.
+- A GitHub Actions cron (`.github/workflows/garmin-sync.yml`) runs through the morning/day.
+- If the sync breaks (usually an expired Garmin token), the job opens a **"Garmin sleep sync
+  is failing"** issue on the repo, which GitHub emails you about. The next good run closes it.
 - It runs `scripts/garmin_sync.py`, which logs into Garmin, pulls last night's sleep
   score + recovery fields, and upserts them into the Supabase `sleep` table.
 - The dashboard's front-middle **Recovery** card reads the latest row, caches it locally,
@@ -54,7 +56,8 @@ dashboard — your score appears on the Recovery card. After that it runs automa
 morning (`cron: "10 11 * * *"`, ~7:10am ET — edit the time in the workflow if you like).
 
 ## Files
-- `index.html` — the dashboard (compiled; edit `OneSlate.dc.html` and re-bundle to change).
+- `index.html` + `assets/` — the dashboard (built; edit `_src/template.html` and rebuild, see `_src/README.md`).
+- `single.html` — the same dashboard as one self-contained file.
 - `supabase/migrations/0001_sleep.sql` — sleep table + security.
 - `.github/workflows/garmin-sync.yml` — the daily job.
 - `scripts/garmin_sync.py` — Garmin → Supabase sync.
@@ -114,12 +117,22 @@ sync pulls the last ~180 days (bounded by Strava's rate limits — 100/15min, 10
 and resumes automatically if it hits the ceiling). Ask the coach *"how was my last run's
 pacing?"* and it answers from the run and shows a **"Based on: …"** citation.
 
-## Coach (health-chat) function
-The conversational coach is the `health-chat` edge function (Gemini). `supabase/functions/
-health-chat/index.ts` is a **reference** version that adds run-awareness; if you already
-have a tuned function deployed, you only need the `RUN_AWARENESS` prompt block from it —
-the browser now sends your recent + focused runs in the request `context` automatically.
-Set its key with `supabase secrets set GEMINI_API_KEY=...`.
+## Coach (health-chat) function — free
+The AI coach is the `health-chat` edge function, on **Gemini's free tier** (no card needed).
+It powers the coach chat, the daily readiness note on the Recovery card / AI Coach tile, the
+weekly recap ("Recap my week"), Data Center insights, and the AI parsing in the calendar
+composer and syllabus import.
+
+1. Get a free key: https://aistudio.google.com/apikey
+2. Supabase → Edge Functions → Secrets (or `supabase secrets set GEMINI_API_KEY=...`).
+3. Supabase → SQL Editor → run `supabase/migrations/0006_coach_usage.sql` (daily cap, so a
+   leaked login can't burn your quota; the coach still works if you skip it).
+4. Actions → **Deploy edge functions** → Run workflow (also redeploys on every function change).
+
+Models: tries the newest Flash first (`gemini-3.6-flash`), then Google's `gemini-flash-latest`
+alias, then Flash-Lite, so it keeps working if a model is retired or today's free quota for
+one runs out. Optional secrets: `GEMINI_MODEL` (force a model), `COACH_DAILY_LIMIT`
+(default 80 messages/day), `ALLOWED_ORIGINS` (comma list, if you host the site elsewhere).
 
 ## Strava files
 - `supabase/migrations/0002_strava.sql` — Strava tables + rich run columns + RLS.
@@ -127,5 +140,6 @@ Set its key with `supabase secrets set GEMINI_API_KEY=...`.
 - `supabase/functions/strava-oauth-callback/` — exchanges the code, stores tokens.
 - `supabase/functions/strava-sync/` — incremental run sync (splits + downsampled streams).
 - `supabase/functions/_shared/strava.ts` — token refresh, rate-limit budget, downsampler.
-- `supabase/functions/health-chat/` — the conversational coach (reference).
+- `supabase/functions/health-chat/` — the AI coach (deployed by CI).
+- `supabase/migrations/0006_coach_usage.sql` — per-user daily coach cap.
 - `supabase/config.toml` — per-function JWT settings.

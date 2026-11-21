@@ -34,6 +34,10 @@ concurrency:
   group: garmin-sync          # never run two at once (single-flight at the CI layer)
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  issues: write               # lets the job open/close the "sync failing" issue
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -57,3 +61,33 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           SUPABASE_USER_ID:    ${{ secrets.SUPABASE_USER_ID }}
         run: python OneSlate/scripts/garmin_sync.py
+
+      # Failure alert: open (or comment on) one "Garmin sync failing" issue. GitHub emails
+      # you about new issues/comments on your own repo, so you hear about it right away.
+      # The next good run closes it. Free, no extra secrets.
+      - name: Alert on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          n=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label garmin-sync --json number -q '.[0].number')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --repo "$GITHUB_REPOSITORY" --body "Still failing: $RUN_URL"
+          else
+            gh label create garmin-sync --repo "$GITHUB_REPOSITORY" --color d93f0b --force >/dev/null 2>&1 || true
+            gh issue create --repo "$GITHUB_REPOSITORY" --label garmin-sync \
+              --title "Garmin sleep sync is failing" \
+              --body "The Garmin sync job failed: $RUN_URL
+
+          Usual fix: your Garmin token expired. Re-run \`python OneSlate/scripts/garmin_token.py\` locally and update the \`GARMIN_TOKEN_BASE64\` secret. This issue closes itself on the next good run."
+          fi
+
+      - name: Close alert on success
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for n in $(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label garmin-sync --json number -q '.[].number'); do
+            gh issue close "$n" --repo "$GITHUB_REPOSITORY" --comment "Sync is working again."
+          done

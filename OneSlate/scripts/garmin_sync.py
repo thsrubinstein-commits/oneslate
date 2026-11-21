@@ -457,7 +457,9 @@ def main():
                     consecutive_failures=fails,
                     next_allowed_sync_at=iso(schedule_cooldown(6)))
         log("done", result="auth_expired", err=str(e)[:160])
-        return
+        # Fail the job so the workflow's alert step opens an issue (you get an email).
+        # A cooldown is already stored, so this won't hammer Garmin.
+        sys.exit(1)
 
     except Exception as e:  # noqa: BLE001  (5xx / network / parse)
         fails += 1
@@ -465,6 +467,9 @@ def main():
                     consecutive_failures=fails,
                     next_allowed_sync_at=iso(schedule_cooldown(min(6, 0.5 * (2 ** min(fails, 5))))))
         log("done", result="error", err=str(e)[:200])
+        # One-off blips are normal. Only alert once it's failed a few runs in a row.
+        if fails >= 3:
+            sys.exit(1)
         return
 
 
