@@ -37,8 +37,8 @@ jobs:
         working-directory: OneSlate            # so the CLI finds supabase/ + config.toml
         run: |
           set -e
-          supabase functions deploy strava-auth-url       --project-ref "$PROJECT_REF"
-          supabase functions deploy strava-sync           --project-ref "$PROJECT_REF"
+          supabase functions deploy strava-auth-url       --project-ref "$PROJECT_REF" --yes
+          supabase functions deploy strava-sync           --project-ref "$PROJECT_REF" --yes
           # callback is hit directly by Strava (no JWT) — force verification off
-          supabase functions deploy strava-oauth-callback --project-ref "$PROJECT_REF" --no-verify-jwt
-          supabase functions deploy health-chat           --project-ref "$PROJECT_REF"
+          supabase functions deploy strava-oauth-callback --project-ref "$PROJECT_REF" --no-verify-jwt --yes
+          supabase functions deploy health-chat           --project-ref "$PROJECT_REF" --yes
